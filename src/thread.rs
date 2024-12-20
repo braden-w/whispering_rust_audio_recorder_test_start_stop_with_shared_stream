@@ -12,11 +12,12 @@ use std::{
 #[derive(Debug)]
 pub enum AudioCommand {
     InitStream,
-    DropStream,
+    DestroyStream,
+    CloseThread,
+
     StartRecording(String, u16),
     StopRecording,
     CancelRecording(String),
-    Exit,
 }
 
 pub struct AudioThread {
@@ -28,18 +29,20 @@ impl AudioThread {
         Self { tx: None }
     }
 
-    pub fn open(&mut self, device_name: String) -> Result<(), String> {
-        if self.tx.is_none() {
-            self.tx = Some(spawn_audio_thread(device_name)?);
+    fn open_thread(&mut self, device_name: String) -> Result<(), String> {
+        if self.tx.is_some() {
             return Ok(());
         }
+        self.tx = Some(spawn_audio_thread(device_name)?);
         Ok(())
     }
 
-    pub fn close(&mut self) -> Result<(), String> {
+    fn close_thread(&mut self) -> Result<(), String> {
         if let Some(tx) = self.tx.take() {
-            tx.send(AudioCommand::Exit).map_err(|e| e.to_string())?;
+            tx.send(AudioCommand::CloseThread)
+                .map_err(|e| e.to_string())?;
         }
+        self.tx = None;
         Ok(())
     }
 
@@ -56,7 +59,7 @@ impl AudioThread {
     }
 }
 
-fn spawn_audio_thread(device_name: String) -> Result<Sender<AudioCommand>, String> {
+fn spawn_audio_thread(device_name: String) -> Result<mpsc::Sender<AudioCommand>, String> {
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || -> Result<(), String> {
@@ -103,13 +106,17 @@ fn spawn_audio_thread(device_name: String) -> Result<Sender<AudioCommand>, Strin
                         println!("Stream is already initialized");
                     }
                 }
-                AudioCommand::DropStream => {
+                AudioCommand::DestroyStream => {
                     if let Some(stream) = maybe_stream.take() {
                         drop(stream);
                         println!("Stream destroyed successfully");
                     } else {
                         println!("No active stream to destroy");
                     }
+                }
+                AudioCommand::CloseThread => {
+                    println!("Audio thread exiting...");
+                    break;
                 }
                 AudioCommand::StartRecording(filename, bits_per_sample) => {
                     if let Some(_) = &maybe_stream {
@@ -165,10 +172,6 @@ fn spawn_audio_thread(device_name: String) -> Result<Sender<AudioCommand>, Strin
                     } else {
                         println!("No active recording to cancel");
                     }
-                }
-                AudioCommand::Exit => {
-                    println!("Audio thread exiting...");
-                    break;
                 }
             }
         }
