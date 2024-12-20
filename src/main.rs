@@ -67,9 +67,9 @@ fn spawn_audio_thread() -> std::result::Result<mpsc::Sender<AudioCommand>, Strin
                 AudioCommand::DropStream => {
                     if let Some(stream) = stream_option.take() {
                         drop(stream);
-                        println!("Stream dropped successfully");
+                        println!("Stream destroyed successfully");
                     } else {
-                        println!("No active stream to drop");
+                        println!("No active stream to destroy");
                     }
                 }
                 AudioCommand::StartRecording(filename, bits_per_sample) => {
@@ -141,13 +141,23 @@ fn spawn_audio_thread() -> std::result::Result<mpsc::Sender<AudioCommand>, Strin
 }
 
 fn main() -> std::result::Result<(), String> {
-    let audio_tx: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>> = Arc::new(Mutex::new(None));
     let current_recording_filename = Arc::new(Mutex::new(None::<String>));
+
+    let audio_tx: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>> = Arc::new(Mutex::new(None));
+    let init_thread = || -> Result<(), String> {
+        let tx = spawn_audio_thread()?;
+        *audio_tx.lock().unwrap() = Some(tx);
+        Ok(())
+    };
+    let close_thread = || -> Result<(), String> {
+        *audio_tx.lock().unwrap() = None;
+        Ok(())
+    };
 
     println!("Audio Recorder CLI");
     println!("Available commands:");
     println!("  init                                - Initialize the audio stream");
-    println!("  drop                                - Drop the audio stream");
+    println!("  destroy                             - Destroy the audio stream");
     println!("  start [bits_per_sample] [id]        - Start recording. Optional bits_per_sample: 16, 24, or 32 (default: 32).");
     println!("                                        Optional id for filename [id].wav (default: output)");
     println!("  stop                                - Stop recording and save the file");
@@ -165,23 +175,25 @@ fn main() -> std::result::Result<(), String> {
         let parts: Vec<&str> = command.split_whitespace().collect();
         match parts.get(0).map(|s| *s) {
             Some("init") => {
-                if audio_tx.lock().unwrap().is_some() {
+                let is_already_initialized = audio_tx.lock().unwrap().is_some();
+                if is_already_initialized {
                     println!("Stream already initialized");
                     continue;
                 }
 
-                let tx = spawn_audio_thread()?;
+                init_thread()?;
+
+                let tx = audio_tx.lock().unwrap().take().unwrap();
                 tx.send(AudioCommand::InitStream)
                     .map_err(|e| e.to_string())?;
-                *audio_tx.lock().unwrap() = Some(tx);
             }
-            Some("drop") => {
+            Some("destroy") => {
                 if let Some(tx) = &*audio_tx.lock().unwrap() {
                     tx.send(AudioCommand::DropStream)
                         .map_err(|e| e.to_string())?;
                     *audio_tx.lock().unwrap() = None;
                 } else {
-                    println!("No active stream to drop");
+                    println!("No active stream to destroy");
                 }
             }
             Some("start") => {
@@ -223,7 +235,7 @@ fn main() -> std::result::Result<(), String> {
                     // First stop the recording
                     tx.send(AudioCommand::StopRecording)
                         .map_err(|e| e.to_string())?;
-                    // Then drop the stream
+                    // Then destroy the stream
                     tx.send(AudioCommand::DropStream)
                         .map_err(|e| e.to_string())?;
                     // Finally exit the thread
@@ -249,7 +261,7 @@ fn main() -> std::result::Result<(), String> {
                     // First stop any ongoing recording
                     tx.send(AudioCommand::StopRecording)
                         .map_err(|e| e.to_string())?;
-                    // Then drop the stream
+                    // Then destroy the stream
                     tx.send(AudioCommand::DropStream)
                         .map_err(|e| e.to_string())?;
                     // Finally exit the thread
@@ -259,7 +271,7 @@ fn main() -> std::result::Result<(), String> {
                 break;
             }
             _ => {
-                println!("Unknown command. Available commands: init, drop, start [bits_per_sample], stop, cancel, exit");
+                println!("Unknown command. Available commands: init, destroy, start [bits_per_sample], stop, cancel, exit");
             }
         }
     }
