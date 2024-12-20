@@ -15,7 +15,7 @@ enum AudioCommand {
     DropStream,
     StartRecording(String, u16),
     StopRecording,
-    CancelRecording,
+    CancelRecording(String),
     Exit,
 }
 
@@ -116,11 +116,13 @@ fn spawn_audio_thread() -> std::result::Result<mpsc::Sender<AudioCommand>, Strin
                         println!("No active recording to stop");
                     }
                 }
-                AudioCommand::CancelRecording => {
+                AudioCommand::CancelRecording(filename) => {
                     if let Some(writer) = writer.lock().unwrap().take() {
-                        // Drop the writer without finalizing to avoid saving the file
                         drop(writer);
-                        println!("Recording cancelled");
+                        if let Err(e) = std::fs::remove_file(filename) {
+                            eprintln!("Failed to delete partial recording: {}", e);
+                        }
+                        println!("Recording cancelled and file deleted");
                     } else {
                         println!("No active recording to cancel");
                     }
@@ -140,6 +142,7 @@ fn spawn_audio_thread() -> std::result::Result<mpsc::Sender<AudioCommand>, Strin
 
 fn main() -> std::result::Result<(), String> {
     let audio_tx: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>> = Arc::new(Mutex::new(None));
+    let current_recording_filename = Arc::new(Mutex::new(None::<String>));
 
     println!("Audio Recorder CLI");
     println!("Available commands:");
@@ -206,9 +209,17 @@ fn main() -> std::result::Result<(), String> {
                     } else {
                         "output.wav".to_string()
                     };
+                    *current_recording_filename.lock().unwrap() = Some(filename);
 
-                    tx.send(AudioCommand::StartRecording(filename, bits_per_sample))
-                        .map_err(|e| e.to_string())?;
+                    tx.send(AudioCommand::StartRecording(
+                        if let Some(id) = parts.get(2) {
+                            format!("{}.wav", id)
+                        } else {
+                            "output.wav".to_string()
+                        },
+                        bits_per_sample,
+                    ))
+                    .map_err(|e| e.to_string())?;
                 } else {
                     println!("Stream not initialized");
                 }
@@ -231,8 +242,10 @@ fn main() -> std::result::Result<(), String> {
             }
             Some("cancel") => {
                 if let Some(tx) = &*audio_tx.lock().unwrap() {
-                    tx.send(AudioCommand::CancelRecording)
-                        .map_err(|e| e.to_string())?;
+                    tx.send(AudioCommand::CancelRecording(
+                        current_recording_filename.lock().unwrap().take().unwrap(),
+                    ))
+                    .map_err(|e| e.to_string())?;
                 } else {
                     println!("Stream not initialized");
                 }
