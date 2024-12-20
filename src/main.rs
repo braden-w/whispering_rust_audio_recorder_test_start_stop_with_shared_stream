@@ -2,9 +2,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::{
     fs::File,
     io::BufWriter,
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex},
 };
-use tokio::sync::mpsc;
 
 const CHANNEL_BUFFER_SIZE: usize = 1;
 const WAV_BITS_PER_SAMPLE: u16 = 32;
@@ -19,7 +18,7 @@ enum AudioCommand {
 }
 
 fn spawn_audio_thread() -> std::result::Result<mpsc::Sender<AudioCommand>, String> {
-    let (tx, mut rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
+    let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || -> std::result::Result<(), String> {
         let host = cpal::default_host();
@@ -35,7 +34,7 @@ fn spawn_audio_thread() -> std::result::Result<mpsc::Sender<AudioCommand>, Strin
 
         let mut stream_option: Option<cpal::Stream> = None;
 
-        while let Some(cmd) = rx.blocking_recv() {
+        while let Ok(cmd) = rx.recv() {
             match cmd {
                 AudioCommand::InitStream => {
                     if stream_option.is_none() {
@@ -110,8 +109,7 @@ fn spawn_audio_thread() -> std::result::Result<mpsc::Sender<AudioCommand>, Strin
     Ok(tx)
 }
 
-#[tokio::main]
-async fn main() -> std::result::Result<(), String> {
+fn main() -> std::result::Result<(), String> {
     let audio_tx: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>> = Arc::new(Mutex::new(None));
 
     println!("Audio Recorder CLI");
@@ -141,7 +139,6 @@ async fn main() -> std::result::Result<(), String> {
                         *audio_tx.lock().unwrap() = Some(tx);
                         if let Some(tx) = &*audio_tx.lock().unwrap() {
                             tx.send(AudioCommand::InitStream)
-                                .await
                                 .map_err(|e| e.to_string())?;
                         }
                     }
@@ -151,7 +148,6 @@ async fn main() -> std::result::Result<(), String> {
             "drop" => {
                 if let Some(tx) = &*audio_tx.lock().unwrap() {
                     tx.send(AudioCommand::DropStream)
-                        .await
                         .map_err(|e| e.to_string())?;
                     *audio_tx.lock().unwrap() = None;
                 } else {
@@ -161,7 +157,6 @@ async fn main() -> std::result::Result<(), String> {
             "start" => {
                 if let Some(tx) = &*audio_tx.lock().unwrap() {
                     tx.send(AudioCommand::StartRecording("output.wav".to_string()))
-                        .await
                         .map_err(|e| e.to_string())?;
                 } else {
                     println!("Stream not initialized");
@@ -170,7 +165,6 @@ async fn main() -> std::result::Result<(), String> {
             "stop" => {
                 if let Some(tx) = &*audio_tx.lock().unwrap() {
                     tx.send(AudioCommand::StopRecording)
-                        .await
                         .map_err(|e| e.to_string())?;
                 } else {
                     println!("Stream not initialized");
@@ -179,7 +173,6 @@ async fn main() -> std::result::Result<(), String> {
             "exit" => {
                 if let Some(tx) = audio_tx.lock().unwrap().take() {
                     tx.send(AudioCommand::DropStream)
-                        .await
                         .map_err(|e| e.to_string())?;
                 }
                 println!("Exiting...");

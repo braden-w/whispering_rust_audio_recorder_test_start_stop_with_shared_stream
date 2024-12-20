@@ -7,7 +7,3 @@ edition = "2021"
 cpal = "0.15.2"
 anyhow = "1.0"
 hound = "3.5.1"
-clap = { version = "4.4.11", features = ["derive"] }
-axum = "0.7.9"
-tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "net"] }
-axum-server = "0.7.1"
