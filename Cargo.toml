@@ -1,0 +1,10 @@
+[package]
+name = "whispering_rust_audio_recorder_test_start_stop_with_shared_stream"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpal = "0.15.2"
+anyhow = "1.0"
+hound = "3.5.1"
+clap = { version = "4.4.11", features = ["derive"] }
