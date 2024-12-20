@@ -133,11 +133,12 @@ fn main() -> std::result::Result<(), String> {
 
     println!("Audio Recorder CLI");
     println!("Available commands:");
-    println!("  init                          - Initialize the audio stream");
-    println!("  drop                          - Drop the audio stream");
-    println!("  start [bits_per_sample]       - Start recording (saves to output.wav). Optional bits_per_sample: 16, 24, or 32 (default: 32)");
-    println!("  stop                          - Stop recording");
-    println!("  exit                          - Exit the program");
+    println!("  init                                - Initialize the audio stream");
+    println!("  drop                                - Drop the audio stream");
+    println!("  start [bits_per_sample] [id]        - Start recording. Optional bits_per_sample: 16, 24, or 32 (default: 32).");
+    println!("                                        Optional id for filename [id].wav (default: output)");
+    println!("  stop                                - Stop recording");
+    println!("  exit                                - Exit the program");
 
     loop {
         let mut input = String::new();
@@ -189,11 +190,14 @@ fn main() -> std::result::Result<(), String> {
                         DEFAULT_BITS_PER_SAMPLE
                     };
 
-                    tx.send(AudioCommand::StartRecording(
-                        "output.wav".to_string(),
-                        bits_per_sample,
-                    ))
-                    .map_err(|e| e.to_string())?;
+                    let filename = if let Some(id) = parts.get(2) {
+                        format!("{}.wav", id)
+                    } else {
+                        "output.wav".to_string()
+                    };
+
+                    tx.send(AudioCommand::StartRecording(filename, bits_per_sample))
+                        .map_err(|e| e.to_string())?;
                 } else {
                     println!("Stream not initialized");
                 }
