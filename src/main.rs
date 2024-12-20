@@ -64,15 +64,6 @@ impl IntoResponse for ApiResponse {
     }
 }
 
-fn create_wav_spec(config: &cpal::SupportedStreamConfig) -> hound::WavSpec {
-    hound::WavSpec {
-        channels: config.channels(),
-        sample_rate: config.sample_rate().0,
-        bits_per_sample: WAV_BITS_PER_SAMPLE,
-        sample_format: hound::SampleFormat::Float,
-    }
-}
-
 fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, AudioError> {
     let (tx, mut rx) = mpsc::channel(CHANNEL_BUFFER_SIZE);
 
@@ -124,7 +115,15 @@ fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, AudioError> {
                 }
                 AudioCommand::StartRecording(filename) => {
                     if let Some(_) = &stream_option {
-                        let spec = create_wav_spec(&config);
+                        let spec = {
+                            let config: &cpal::SupportedStreamConfig = &config;
+                            hound::WavSpec {
+                                channels: config.channels(),
+                                sample_rate: config.sample_rate().0,
+                                bits_per_sample: WAV_BITS_PER_SAMPLE,
+                                sample_format: hound::SampleFormat::Float,
+                            }
+                        };
                         match hound::WavWriter::create(&filename, spec) {
                             Ok(new_writer) => {
                                 *writer.lock().unwrap() = Some(new_writer);
