@@ -1,6 +1,8 @@
 use axum::{extract::State, response::IntoResponse, routing::get, Router};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::{
+    fs::File,
+    io::BufWriter,
     net::SocketAddr,
     sync::{Arc, Mutex},
 };
@@ -9,7 +11,7 @@ use tokio::sync::mpsc;
 // Commands that can be sent to the audio thread
 #[derive(Debug)]
 enum AudioCommand {
-    Start,
+    Start(String), // Add filename parameter
     Stop,
 }
 
@@ -29,25 +31,20 @@ fn spawn_audio_thread() -> mpsc::Sender<AudioCommand> {
         let config = device
             .default_input_config()
             .expect("no default input config");
+        let config_clone = config.clone();
 
-        let spec = hound::WavSpec {
-            channels: config.channels(),
-            sample_rate: config.sample_rate().0,
-            bits_per_sample: 32,
-            sample_format: hound::SampleFormat::Float,
-        };
-
-        let writer = Arc::new(Mutex::new(
-            hound::WavWriter::create("output.wav", spec).unwrap(),
-        ));
+        // Keep writer in an Option to swap it when starting new recordings
+        let writer = Arc::new(Mutex::new(None::<hound::WavWriter<BufWriter<File>>>));
         let writer_clone = writer.clone();
+
         let stream = device
             .build_input_stream(
                 &config.into(),
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    let mut writer = writer_clone.lock().unwrap();
-                    for &sample in data {
-                        writer.write_sample(sample).unwrap();
+                    if let Some(writer) = &mut *writer_clone.lock().unwrap() {
+                        for &sample in data {
+                            writer.write_sample(sample).unwrap();
+                        }
                     }
                 },
                 |err| eprintln!("Error in stream: {}", err),
@@ -57,16 +54,25 @@ fn spawn_audio_thread() -> mpsc::Sender<AudioCommand> {
 
         while let Some(cmd) = rx.blocking_recv() {
             match cmd {
-                AudioCommand::Start => {
-                    println!("Starting recording");
-                    if let Err(e) = stream.play() {
-                        eprintln!("Failed to start stream: {}", e);
-                    }
+                AudioCommand::Start(filename) => {
+                    let spec = hound::WavSpec {
+                        channels: config_clone.channels(),
+                        sample_rate: config_clone.sample_rate().0,
+                        bits_per_sample: 32,
+                        sample_format: hound::SampleFormat::Float,
+                    };
+
+                    // Create new writer for the new file
+                    *writer.lock().unwrap() =
+                        Some(hound::WavWriter::create(&filename, spec).unwrap());
+
+                    stream.play().unwrap();
                 }
                 AudioCommand::Stop => {
-                    println!("Stopping recording");
-                    if let Err(e) = stream.pause() {
-                        eprintln!("Failed to stop stream: {}", e);
+                    stream.pause().unwrap();
+                    // Finalize the current writer
+                    if let Some(writer) = writer.lock().unwrap().take() {
+                        writer.finalize().unwrap();
                     }
                 }
             }
@@ -79,7 +85,8 @@ fn spawn_audio_thread() -> mpsc::Sender<AudioCommand> {
 }
 
 async fn start_recording(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    if let Err(e) = state.audio_tx.send(AudioCommand::Start).await {
+    if let Err(e) = state.audio_tx.send(AudioCommand::Start("output.wav".to_string())).await
+    {
         return format!("Failed to start recording: {}", e);
     }
     "Recording started".to_string()
