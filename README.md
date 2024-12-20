@@ -1,12 +1,14 @@
-# Rust Audio Recorder with Start/Stop Control
+# Rust Audio Recorder CLI
 
-A test project demonstrating audio recording with start/stop functionality using shared streams in Rust. Built with CPAL (Cross-Platform Audio Library).
+A command-line audio recording application built with Rust using CPAL (Cross-Platform Audio Library). This application allows you to control audio recording through simple interactive commands.
 
 ## Features
 
-- List available audio input devices
+- Interactive command-line interface
+- Initialize and manage audio input streams
 - Record audio from the default input device to WAV files
-- Support for different sample formats (16-bit integer and 32-bit float)
+- Clean stream management with start/stop functionality
+- 32-bit float WAV recording format
 
 ## Prerequisites
 
@@ -21,22 +23,46 @@ cargo build --release
 
 ## Usage
 
-### List Available Devices
-
+Run the application:
 ```bash
-cargo run -- list-devices
+cargo run
 ```
 
-### Record Audio
+### Available Commands
 
-Record 10 seconds of audio to output.wav:
+The application provides an interactive prompt with the following commands:
+
+- `init` - Initialize the audio stream
+- `start` - Start recording (saves to output.wav)
+- `stop` - Stop the current recording
+- `drop` - Drop the audio stream
+- `exit` - Exit the program
+
+### Example Session
+
 ```bash
-cargo run -- record -d 10 -o output.wav
+$ cargo run
+Audio Recorder CLI
+Available commands:
+  init    - Initialize the audio stream
+  drop    - Drop the audio stream
+  start   - Start recording (saves to output.wav)
+  stop    - Stop recording
+  exit    - Exit the program
+
+> init
+Stream initialized successfully
+> start
+Recording started
+> stop
+Recording stopped
+> exit
+Exiting...
 ```
 
-Options:
-- `-d, --duration <SECONDS>`: Recording duration in seconds (default: 5)
-- `-o, --output <FILE>`: Output WAV file path
+## Output
+
+Recordings are saved as `output.wav` in the current directory using 32-bit float format.
 
 ## License
 
