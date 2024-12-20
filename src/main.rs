@@ -6,14 +6,14 @@ use std::{
 };
 
 const CHANNEL_BUFFER_SIZE: usize = 1;
-const WAV_BITS_PER_SAMPLE: u16 = 32;
+const DEFAULT_BITS_PER_SAMPLE: u16 = 32;
 
 // Commands that can be sent to the audio thread
 #[derive(Debug)]
 enum AudioCommand {
     InitStream,
     DropStream,
-    StartRecording(String),
+    StartRecording(String, u16),
     StopRecording,
 }
 
@@ -70,21 +70,35 @@ fn spawn_audio_thread() -> std::result::Result<mpsc::Sender<AudioCommand>, Strin
                         println!("No active stream to drop");
                     }
                 }
-                AudioCommand::StartRecording(filename) => {
+                AudioCommand::StartRecording(filename, bits_per_sample) => {
                     if let Some(_) = &stream_option {
                         let spec = {
                             let config: &cpal::SupportedStreamConfig = &config;
                             hound::WavSpec {
                                 channels: config.channels(),
                                 sample_rate: config.sample_rate().0,
-                                bits_per_sample: WAV_BITS_PER_SAMPLE,
-                                sample_format: hound::SampleFormat::Float,
+                                bits_per_sample,
+                                sample_format: match bits_per_sample {
+                                    16 => hound::SampleFormat::Int,
+                                    24 => hound::SampleFormat::Int,
+                                    32 => hound::SampleFormat::Float,
+                                    _ => {
+                                        eprintln!(
+                                            "Unsupported bits per sample: {}",
+                                            bits_per_sample
+                                        );
+                                        continue;
+                                    }
+                                },
                             }
                         };
                         match hound::WavWriter::create(&filename, spec) {
                             Ok(new_writer) => {
                                 *writer.lock().unwrap() = Some(new_writer);
-                                println!("Recording started");
+                                println!(
+                                    "Recording started with {} bits per sample",
+                                    bits_per_sample
+                                );
                             }
                             Err(e) => eprintln!("Failed to create WAV writer: {}", e),
                         }
@@ -111,14 +125,16 @@ fn spawn_audio_thread() -> std::result::Result<mpsc::Sender<AudioCommand>, Strin
 
 fn main() -> std::result::Result<(), String> {
     let audio_tx: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>> = Arc::new(Mutex::new(None));
+    let mut current_bits_per_sample = DEFAULT_BITS_PER_SAMPLE;
 
     println!("Audio Recorder CLI");
     println!("Available commands:");
-    println!("  init    - Initialize the audio stream");
-    println!("  drop    - Drop the audio stream");
-    println!("  start   - Start recording (saves to output.wav)");
-    println!("  stop    - Stop recording");
-    println!("  exit    - Exit the program");
+    println!("  init                    - Initialize the audio stream");
+    println!("  drop                    - Drop the audio stream");
+    println!("  start                   - Start recording (saves to output.wav)");
+    println!("  stop                    - Stop recording");
+    println!("  bits [16|24|32]         - Set bits per sample (default: 32)");
+    println!("  exit                    - Exit the program");
 
     loop {
         let mut input = String::new();
@@ -127,8 +143,10 @@ fn main() -> std::result::Result<(), String> {
             .map_err(|e| e.to_string())?;
         let command = input.trim();
 
-        match command {
-            "init" => {
+        // Split command into parts for handling arguments
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        match parts.get(0).map(|s| *s) {
+            Some("init") => {
                 if audio_tx.lock().unwrap().is_some() {
                     println!("Stream already initialized");
                     continue;
@@ -145,7 +163,7 @@ fn main() -> std::result::Result<(), String> {
                     Err(e) => println!("Failed to initialize stream: {}", e),
                 }
             }
-            "drop" => {
+            Some("drop") => {
                 if let Some(tx) = &*audio_tx.lock().unwrap() {
                     tx.send(AudioCommand::DropStream)
                         .map_err(|e| e.to_string())?;
@@ -154,15 +172,35 @@ fn main() -> std::result::Result<(), String> {
                     println!("No active stream to drop");
                 }
             }
-            "start" => {
+            Some("bits") => {
+                if let Some(bits_str) = parts.get(1) {
+                    match bits_str.parse::<u16>() {
+                        Ok(bits) => {
+                            if [16, 24, 32].contains(&bits) {
+                                current_bits_per_sample = bits;
+                                println!("Bits per sample set to {}", bits);
+                            } else {
+                                println!("Invalid bits per sample. Valid values are: 16, 24, 32");
+                            }
+                        }
+                        Err(_) => println!("Invalid number format. Please use: bits [16|24|32]"),
+                    }
+                } else {
+                    println!("Current bits per sample: {}", current_bits_per_sample);
+                }
+            }
+            Some("start") => {
                 if let Some(tx) = &*audio_tx.lock().unwrap() {
-                    tx.send(AudioCommand::StartRecording("output.wav".to_string()))
-                        .map_err(|e| e.to_string())?;
+                    tx.send(AudioCommand::StartRecording(
+                        "output.wav".to_string(),
+                        current_bits_per_sample,
+                    ))
+                    .map_err(|e| e.to_string())?;
                 } else {
                     println!("Stream not initialized");
                 }
             }
-            "stop" => {
+            Some("stop") => {
                 if let Some(tx) = &*audio_tx.lock().unwrap() {
                     tx.send(AudioCommand::StopRecording)
                         .map_err(|e| e.to_string())?;
@@ -170,7 +208,7 @@ fn main() -> std::result::Result<(), String> {
                     println!("Stream not initialized");
                 }
             }
-            "exit" => {
+            Some("exit") => {
                 if let Some(tx) = audio_tx.lock().unwrap().take() {
                     tx.send(AudioCommand::DropStream)
                         .map_err(|e| e.to_string())?;
@@ -179,7 +217,7 @@ fn main() -> std::result::Result<(), String> {
                 break;
             }
             _ => {
-                println!("Unknown command. Available commands: init, drop, start, stop, exit");
+                println!("Unknown command. Available commands: init, drop, start, stop, bits [16|24|32], exit");
             }
         }
     }
