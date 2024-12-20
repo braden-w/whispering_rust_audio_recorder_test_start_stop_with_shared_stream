@@ -1,23 +1,12 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    routing::get,
-    Router,
-};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::{
     fmt,
     fs::File,
     io::BufWriter,
-    net::SocketAddr,
     sync::{Arc, Mutex},
 };
 use tokio::sync::mpsc;
 
-// Configuration constants
-const SERVER_HOST: [u8; 4] = [127, 0, 0, 1];
-const SERVER_PORT: u16 = 3000;
 const CHANNEL_BUFFER_SIZE: usize = 1;
 const WAV_BITS_PER_SAMPLE: u16 = 32;
 
@@ -44,24 +33,6 @@ enum AudioCommand {
     DropStream,
     StartRecording(String),
     StopRecording,
-}
-
-// Shared state between handlers
-#[derive(Clone)]
-struct AppState {
-    audio_tx: mpsc::Sender<AudioCommand>,
-}
-
-// Response type for API endpoints
-struct ApiResponse {
-    status: StatusCode,
-    message: String,
-}
-
-impl IntoResponse for ApiResponse {
-    fn into_response(self) -> Response {
-        (self.status, self.message).into_response()
-    }
 }
 
 fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, AudioError> {
@@ -103,14 +74,20 @@ fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, AudioError> {
                             Ok(stream) => {
                                 let _ = stream.play();
                                 stream_option = Some(stream);
+                                println!("Stream initialized successfully");
                             }
                             Err(e) => eprintln!("Failed to build stream: {}", e),
                         }
+                    } else {
+                        println!("Stream is already initialized");
                     }
                 }
                 AudioCommand::DropStream => {
                     if let Some(stream) = stream_option.take() {
                         drop(stream);
+                        println!("Stream dropped successfully");
+                    } else {
+                        println!("No active stream to drop");
                     }
                 }
                 AudioCommand::StartRecording(filename) => {
@@ -127,14 +104,20 @@ fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, AudioError> {
                         match hound::WavWriter::create(&filename, spec) {
                             Ok(new_writer) => {
                                 *writer.lock().unwrap() = Some(new_writer);
+                                println!("Recording started");
                             }
                             Err(e) => eprintln!("Failed to create WAV writer: {}", e),
                         }
+                    } else {
+                        println!("Stream not initialized. Please initialize stream first.");
                     }
                 }
                 AudioCommand::StopRecording => {
                     if let Some(writer) = writer.lock().unwrap().take() {
                         let _ = writer.finalize();
+                        println!("Recording stopped");
+                    } else {
+                        println!("No active recording to stop");
                     }
                 }
             }
@@ -146,80 +129,75 @@ fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, AudioError> {
     Ok(tx)
 }
 
-async fn init_stream(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.audio_tx.send(AudioCommand::InitStream).await {
-        Ok(_) => ApiResponse {
-            status: StatusCode::OK,
-            message: "Stream initialized".to_string(),
-        },
-        Err(e) => ApiResponse {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("Failed to initialize stream: {}", e),
-        },
-    }
-}
-
-async fn drop_stream(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.audio_tx.send(AudioCommand::DropStream).await {
-        Ok(_) => ApiResponse {
-            status: StatusCode::OK,
-            message: "Stream dropped".to_string(),
-        },
-        Err(e) => ApiResponse {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("Failed to drop stream: {}", e),
-        },
-    }
-}
-
-async fn start_recording(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state
-        .audio_tx
-        .send(AudioCommand::StartRecording("output.wav".to_string()))
-        .await
-    {
-        Ok(_) => ApiResponse {
-            status: StatusCode::OK,
-            message: "Recording started".to_string(),
-        },
-        Err(e) => ApiResponse {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("Failed to start recording: {}", e),
-        },
-    }
-}
-
-async fn stop_recording(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.audio_tx.send(AudioCommand::StopRecording).await {
-        Ok(_) => ApiResponse {
-            status: StatusCode::OK,
-            message: "Recording stopped".to_string(),
-        },
-        Err(e) => ApiResponse {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("Failed to stop recording: {}", e),
-        },
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let audio_tx =
-        spawn_audio_thread().map_err(|e| format!("Failed to spawn audio thread: {}", e))?;
+    let audio_tx: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>> = Arc::new(Mutex::new(None));
 
-    let state = Arc::new(AppState { audio_tx });
-    let app = Router::new()
-        .route("/init-stream", get(init_stream))
-        .route("/drop-stream", get(drop_stream))
-        .route("/start", get(start_recording))
-        .route("/stop", get(stop_recording))
-        .with_state(state);
+    println!("Audio Recorder CLI");
+    println!("Available commands:");
+    println!("  init    - Initialize the audio stream");
+    println!("  drop    - Drop the audio stream");
+    println!("  start   - Start recording (saves to output.wav)");
+    println!("  stop    - Stop recording");
+    println!("  exit    - Exit the program");
 
-    println!("Server starting on http://localhost:{}", SERVER_PORT);
-    let addr = SocketAddr::from((SERVER_HOST, SERVER_PORT));
+    loop {
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let command = input.trim();
 
-    axum_server::bind(addr)
-        .serve(app.into_make_service())
-        .await
-        .map_err(|e| e.into())
+        match command {
+            "init" => {
+                if audio_tx.lock().unwrap().is_some() {
+                    println!("Stream already initialized");
+                    continue;
+                }
+
+                match spawn_audio_thread() {
+                    Ok(tx) => {
+                        *audio_tx.lock().unwrap() = Some(tx);
+                        if let Some(tx) = &*audio_tx.lock().unwrap() {
+                            tx.send(AudioCommand::InitStream).await?;
+                        }
+                    }
+                    Err(e) => println!("Failed to initialize stream: {}", e),
+                }
+            }
+            "drop" => {
+                if let Some(tx) = &*audio_tx.lock().unwrap() {
+                    tx.send(AudioCommand::DropStream).await?;
+                    *audio_tx.lock().unwrap() = None;
+                } else {
+                    println!("No active stream to drop");
+                }
+            }
+            "start" => {
+                if let Some(tx) = &*audio_tx.lock().unwrap() {
+                    tx.send(AudioCommand::StartRecording("output.wav".to_string()))
+                        .await?;
+                } else {
+                    println!("Stream not initialized");
+                }
+            }
+            "stop" => {
+                if let Some(tx) = &*audio_tx.lock().unwrap() {
+                    tx.send(AudioCommand::StopRecording).await?;
+                } else {
+                    println!("Stream not initialized");
+                }
+            }
+            "exit" => {
+                if let Some(tx) = audio_tx.lock().unwrap().take() {
+                    tx.send(AudioCommand::DropStream).await?;
+                }
+                println!("Exiting...");
+                break;
+            }
+            _ => {
+                println!("Unknown command. Available commands: init, drop, start, stop, exit");
+            }
+        }
+    }
+
+    Ok(())
 }
