@@ -28,9 +28,9 @@ impl AudioThread {
         Self { tx: None }
     }
 
-    pub fn open(&mut self) -> Result<(), String> {
+    pub fn open(&mut self, device_name: String) -> Result<(), String> {
         if self.tx.is_none() {
-            self.tx = Some(spawn_audio_thread()?);
+            self.tx = Some(spawn_audio_thread(device_name)?);
             return Ok(());
         }
         Ok(())
@@ -56,14 +56,16 @@ impl AudioThread {
     }
 }
 
-fn spawn_audio_thread() -> Result<Sender<AudioCommand>, String> {
+fn spawn_audio_thread(device_name: String) -> Result<Sender<AudioCommand>, String> {
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || -> Result<(), String> {
         let host = cpal::default_host();
         let device = host
-            .default_input_device()
-            .ok_or_else(|| "No input device available".to_string())?;
+            .input_devices()
+            .map_err(|e| e.to_string())?
+            .find(|d| matches!(d.name(), Ok(name) if name == device_name))
+            .ok_or_else(|| "Device not found".to_string())?;
 
         let config = device.default_input_config().map_err(|e| e.to_string())?;
         let stream_config = config.clone().into();
@@ -71,12 +73,12 @@ fn spawn_audio_thread() -> Result<Sender<AudioCommand>, String> {
         let writer = Arc::new(Mutex::new(None::<hound::WavWriter<BufWriter<File>>>));
         let writer_clone = Arc::clone(&writer);
 
-        let mut stream_option: Option<Stream> = None;
+        let mut maybe_stream: Option<Stream> = None;
 
         while let Ok(cmd) = rx.recv() {
             match cmd {
                 AudioCommand::InitStream => {
-                    if stream_option.is_none() {
+                    if maybe_stream.is_none() {
                         let writer_for_closure = Arc::clone(&writer_clone);
                         match device.build_input_stream(
                             &stream_config,
@@ -92,7 +94,7 @@ fn spawn_audio_thread() -> Result<Sender<AudioCommand>, String> {
                         ) {
                             Ok(stream) => {
                                 let _ = stream.play();
-                                stream_option = Some(stream);
+                                maybe_stream = Some(stream);
                                 println!("Stream initialized successfully");
                             }
                             Err(e) => eprintln!("Failed to build stream: {}", e),
@@ -102,7 +104,7 @@ fn spawn_audio_thread() -> Result<Sender<AudioCommand>, String> {
                     }
                 }
                 AudioCommand::DropStream => {
-                    if let Some(stream) = stream_option.take() {
+                    if let Some(stream) = maybe_stream.take() {
                         drop(stream);
                         println!("Stream destroyed successfully");
                     } else {
@@ -110,7 +112,7 @@ fn spawn_audio_thread() -> Result<Sender<AudioCommand>, String> {
                     }
                 }
                 AudioCommand::StartRecording(filename, bits_per_sample) => {
-                    if let Some(_) = &stream_option {
+                    if let Some(_) = &maybe_stream {
                         let spec = {
                             let config: &SupportedStreamConfig = &config;
                             hound::WavSpec {
