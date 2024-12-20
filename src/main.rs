@@ -40,8 +40,10 @@ impl fmt::Display for AudioError {
 // Commands that can be sent to the audio thread
 #[derive(Debug)]
 enum AudioCommand {
-    Start(String),
-    Stop,
+    InitStream,
+    DropStream,
+    StartRecording(String),
+    StopRecording,
 }
 
 // Shared state between handlers
@@ -83,40 +85,55 @@ fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, AudioError> {
         let config = device
             .default_input_config()
             .map_err(|e| AudioError::DeviceError(e.to_string()))?;
-        let config_clone = config.clone();
+        let stream_config = config.clone().into();
 
         let writer = Arc::new(Mutex::new(None::<hound::WavWriter<BufWriter<File>>>));
-        let writer_clone = writer.clone();
+        let writer_clone = Arc::clone(&writer);
 
-        let stream = device
-            .build_input_stream(
-                &config.into(),
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    if let Some(writer) = &mut *writer_clone.lock().unwrap() {
-                        for &sample in data {
-                            let _ = writer.write_sample(sample);
-                        }
-                    }
-                },
-                |err| eprintln!("Stream error: {}", err),
-                None,
-            )
-            .map_err(|e| AudioError::StreamError(e.to_string()))?;
+        let mut stream_option: Option<cpal::Stream> = None;
 
         while let Some(cmd) = rx.blocking_recv() {
             match cmd {
-                AudioCommand::Start(filename) => {
-                    let spec = create_wav_spec(&config_clone);
-                    match hound::WavWriter::create(&filename, spec) {
-                        Ok(new_writer) => {
-                            *writer.lock().unwrap() = Some(new_writer);
-                            let _ = stream.play();
+                AudioCommand::InitStream => {
+                    if stream_option.is_none() {
+                        let writer_for_closure = Arc::clone(&writer_clone);
+                        match device.build_input_stream(
+                            &stream_config,
+                            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                                if let Some(writer) = &mut *writer_for_closure.lock().unwrap() {
+                                    for &sample in data {
+                                        let _ = writer.write_sample(sample);
+                                    }
+                                }
+                            },
+                            |err| eprintln!("Stream error: {}", err),
+                            None,
+                        ) {
+                            Ok(stream) => {
+                                let _ = stream.play();
+                                stream_option = Some(stream);
+                            }
+                            Err(e) => eprintln!("Failed to build stream: {}", e),
                         }
-                        Err(e) => eprintln!("Failed to create WAV writer: {}", e),
                     }
                 }
-                AudioCommand::Stop => {
-                    let _ = stream.pause();
+                AudioCommand::DropStream => {
+                    if let Some(stream) = stream_option.take() {
+                        drop(stream);
+                    }
+                }
+                AudioCommand::StartRecording(filename) => {
+                    if let Some(_) = &stream_option {
+                        let spec = create_wav_spec(&config);
+                        match hound::WavWriter::create(&filename, spec) {
+                            Ok(new_writer) => {
+                                *writer.lock().unwrap() = Some(new_writer);
+                            }
+                            Err(e) => eprintln!("Failed to create WAV writer: {}", e),
+                        }
+                    }
+                }
+                AudioCommand::StopRecording => {
                     if let Some(writer) = writer.lock().unwrap().take() {
                         let _ = writer.finalize();
                     }
@@ -130,10 +147,36 @@ fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, AudioError> {
     Ok(tx)
 }
 
+async fn init_stream(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.audio_tx.send(AudioCommand::InitStream).await {
+        Ok(_) => ApiResponse {
+            status: StatusCode::OK,
+            message: "Stream initialized".to_string(),
+        },
+        Err(e) => ApiResponse {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("Failed to initialize stream: {}", e),
+        },
+    }
+}
+
+async fn drop_stream(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.audio_tx.send(AudioCommand::DropStream).await {
+        Ok(_) => ApiResponse {
+            status: StatusCode::OK,
+            message: "Stream dropped".to_string(),
+        },
+        Err(e) => ApiResponse {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("Failed to drop stream: {}", e),
+        },
+    }
+}
+
 async fn start_recording(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state
         .audio_tx
-        .send(AudioCommand::Start("output.wav".to_string()))
+        .send(AudioCommand::StartRecording("output.wav".to_string()))
         .await
     {
         Ok(_) => ApiResponse {
@@ -148,7 +191,7 @@ async fn start_recording(State(state): State<Arc<AppState>>) -> impl IntoRespons
 }
 
 async fn stop_recording(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.audio_tx.send(AudioCommand::Stop).await {
+    match state.audio_tx.send(AudioCommand::StopRecording).await {
         Ok(_) => ApiResponse {
             status: StatusCode::OK,
             message: "Recording stopped".to_string(),
@@ -167,6 +210,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = Arc::new(AppState { audio_tx });
     let app = Router::new()
+        .route("/init-stream", get(init_stream))
+        .route("/drop-stream", get(drop_stream))
         .route("/start", get(start_recording))
         .route("/stop", get(stop_recording))
         .with_state(state);
