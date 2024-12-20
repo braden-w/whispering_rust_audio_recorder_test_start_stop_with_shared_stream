@@ -125,16 +125,14 @@ fn spawn_audio_thread() -> std::result::Result<mpsc::Sender<AudioCommand>, Strin
 
 fn main() -> std::result::Result<(), String> {
     let audio_tx: Arc<Mutex<Option<mpsc::Sender<AudioCommand>>>> = Arc::new(Mutex::new(None));
-    let mut current_bits_per_sample = DEFAULT_BITS_PER_SAMPLE;
 
     println!("Audio Recorder CLI");
     println!("Available commands:");
-    println!("  init                    - Initialize the audio stream");
-    println!("  drop                    - Drop the audio stream");
-    println!("  start                   - Start recording (saves to output.wav)");
-    println!("  stop                    - Stop recording");
-    println!("  bits [16|24|32]         - Set bits per sample (default: 32)");
-    println!("  exit                    - Exit the program");
+    println!("  init                          - Initialize the audio stream");
+    println!("  drop                          - Drop the audio stream");
+    println!("  start [bits_per_sample]       - Start recording (saves to output.wav). Optional bits_per_sample: 16, 24, or 32 (default: 32)");
+    println!("  stop                          - Stop recording");
+    println!("  exit                          - Exit the program");
 
     loop {
         let mut input = String::new();
@@ -172,28 +170,23 @@ fn main() -> std::result::Result<(), String> {
                     println!("No active stream to drop");
                 }
             }
-            Some("bits") => {
-                if let Some(bits_str) = parts.get(1) {
-                    match bits_str.parse::<u16>() {
-                        Ok(bits) => {
-                            if [16, 24, 32].contains(&bits) {
-                                current_bits_per_sample = bits;
-                                println!("Bits per sample set to {}", bits);
-                            } else {
-                                println!("Invalid bits per sample. Valid values are: 16, 24, 32");
-                            }
-                        }
-                        Err(_) => println!("Invalid number format. Please use: bits [16|24|32]"),
-                    }
-                } else {
-                    println!("Current bits per sample: {}", current_bits_per_sample);
-                }
-            }
             Some("start") => {
                 if let Some(tx) = &*audio_tx.lock().unwrap() {
+                    let bits_per_sample = if let Some(bits_str) = parts.get(1) {
+                        match bits_str.parse::<u16>() {
+                            Ok(bits) if [16, 24, 32].contains(&bits) => bits,
+                            _ => {
+                                println!("Invalid bits per sample. Using default (32). Valid values are: 16, 24, 32");
+                                DEFAULT_BITS_PER_SAMPLE
+                            }
+                        }
+                    } else {
+                        DEFAULT_BITS_PER_SAMPLE
+                    };
+
                     tx.send(AudioCommand::StartRecording(
                         "output.wav".to_string(),
-                        current_bits_per_sample,
+                        bits_per_sample,
                     ))
                     .map_err(|e| e.to_string())?;
                 } else {
@@ -217,7 +210,7 @@ fn main() -> std::result::Result<(), String> {
                 break;
             }
             _ => {
-                println!("Unknown command. Available commands: init, drop, start, stop, bits [16|24|32], exit");
+                println!("Unknown command. Available commands: init, drop, start [bits_per_sample], stop, exit");
             }
         }
     }
