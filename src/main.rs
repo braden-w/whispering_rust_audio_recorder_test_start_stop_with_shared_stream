@@ -15,6 +15,7 @@ enum AudioCommand {
     DropStream,
     StartRecording(String, u16),
     StopRecording,
+    Exit,
 }
 
 fn spawn_audio_thread() -> std::result::Result<mpsc::Sender<AudioCommand>, String> {
@@ -114,6 +115,10 @@ fn spawn_audio_thread() -> std::result::Result<mpsc::Sender<AudioCommand>, Strin
                         println!("No active recording to stop");
                     }
                 }
+                AudioCommand::Exit => {
+                    println!("Audio thread exiting...");
+                    break;
+                }
             }
         }
 
@@ -195,16 +200,30 @@ fn main() -> std::result::Result<(), String> {
             }
             Some("stop") => {
                 if let Some(tx) = &*audio_tx.lock().unwrap() {
+                    // First stop the recording
                     tx.send(AudioCommand::StopRecording)
                         .map_err(|e| e.to_string())?;
+                    // Then drop the stream
+                    tx.send(AudioCommand::DropStream)
+                        .map_err(|e| e.to_string())?;
+                    // Finally exit the thread
+                    tx.send(AudioCommand::Exit).map_err(|e| e.to_string())?;
+                    // Clear the sender from the mutex
+                    *audio_tx.lock().unwrap() = None;
                 } else {
                     println!("Stream not initialized");
                 }
             }
             Some("exit") => {
                 if let Some(tx) = audio_tx.lock().unwrap().take() {
+                    // First stop any ongoing recording
+                    tx.send(AudioCommand::StopRecording)
+                        .map_err(|e| e.to_string())?;
+                    // Then drop the stream
                     tx.send(AudioCommand::DropStream)
                         .map_err(|e| e.to_string())?;
+                    // Finally exit the thread
+                    tx.send(AudioCommand::Exit).map_err(|e| e.to_string())?;
                 }
                 println!("Exiting...");
                 break;
