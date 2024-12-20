@@ -170,16 +170,10 @@ fn main() -> std::result::Result<(), String> {
                     continue;
                 }
 
-                match spawn_audio_thread() {
-                    Ok(tx) => {
-                        *audio_tx.lock().unwrap() = Some(tx);
-                        if let Some(tx) = &*audio_tx.lock().unwrap() {
-                            tx.send(AudioCommand::InitStream)
-                                .map_err(|e| e.to_string())?;
-                        }
-                    }
-                    Err(e) => println!("Failed to initialize stream: {}", e),
-                }
+                let tx = spawn_audio_thread()?;
+                tx.send(AudioCommand::InitStream)
+                    .map_err(|e| e.to_string())?;
+                *audio_tx.lock().unwrap() = Some(tx);
             }
             Some("drop") => {
                 if let Some(tx) = &*audio_tx.lock().unwrap() {
