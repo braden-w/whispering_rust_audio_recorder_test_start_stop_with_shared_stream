@@ -15,6 +15,7 @@ enum AudioCommand {
     DropStream,
     StartRecording(String, u16),
     StopRecording,
+    CancelRecording,
     Exit,
 }
 
@@ -115,6 +116,15 @@ fn spawn_audio_thread() -> std::result::Result<mpsc::Sender<AudioCommand>, Strin
                         println!("No active recording to stop");
                     }
                 }
+                AudioCommand::CancelRecording => {
+                    if let Some(writer) = writer.lock().unwrap().take() {
+                        // Drop the writer without finalizing to avoid saving the file
+                        drop(writer);
+                        println!("Recording cancelled");
+                    } else {
+                        println!("No active recording to cancel");
+                    }
+                }
                 AudioCommand::Exit => {
                     println!("Audio thread exiting...");
                     break;
@@ -137,7 +147,8 @@ fn main() -> std::result::Result<(), String> {
     println!("  drop                                - Drop the audio stream");
     println!("  start [bits_per_sample] [id]        - Start recording. Optional bits_per_sample: 16, 24, or 32 (default: 32).");
     println!("                                        Optional id for filename [id].wav (default: output)");
-    println!("  stop                                - Stop recording");
+    println!("  stop                                - Stop recording and save the file");
+    println!("  cancel                              - Cancel recording without saving");
     println!("  exit                                - Exit the program");
 
     loop {
@@ -218,6 +229,14 @@ fn main() -> std::result::Result<(), String> {
                     println!("Stream not initialized");
                 }
             }
+            Some("cancel") => {
+                if let Some(tx) = &*audio_tx.lock().unwrap() {
+                    tx.send(AudioCommand::CancelRecording)
+                        .map_err(|e| e.to_string())?;
+                } else {
+                    println!("Stream not initialized");
+                }
+            }
             Some("exit") => {
                 if let Some(tx) = audio_tx.lock().unwrap().take() {
                     // First stop any ongoing recording
@@ -233,7 +252,7 @@ fn main() -> std::result::Result<(), String> {
                 break;
             }
             _ => {
-                println!("Unknown command. Available commands: init, drop, start [bits_per_sample], stop, exit");
+                println!("Unknown command. Available commands: init, drop, start [bits_per_sample], stop, cancel, exit");
             }
         }
     }
