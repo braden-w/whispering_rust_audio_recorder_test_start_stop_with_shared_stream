@@ -11,9 +11,10 @@ use std::{
 
 #[derive(Debug)]
 pub enum AudioCommand {
-    InitStream(String),
-    DestroyStream,
     CloseThread,
+
+    InitRecordingSession(String),
+    CloseRecordingSession,
 
     StartRecording(String, u16),
     StopRecording,
@@ -72,7 +73,7 @@ fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, String> {
 
         while let Ok(cmd) = rx.recv() {
             match cmd {
-                AudioCommand::InitStream(device_name) => {
+                AudioCommand::InitRecordingSession(device_name) => {
                     if maybe_stream.is_some() {
                         println!("Stream is already initialized");
                     } else {
@@ -107,7 +108,7 @@ fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, String> {
                         }
                     }
                 }
-                AudioCommand::DestroyStream => {
+                AudioCommand::CloseRecordingSession => {
                     if let Some(stream) = maybe_stream.take() {
                         drop(stream);
                         println!("Stream destroyed successfully");
