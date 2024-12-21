@@ -11,7 +11,7 @@ use std::{
 
 #[derive(Debug)]
 pub enum AudioCommand {
-    InitStream,
+    InitStream(String),
     DestroyStream,
     CloseThread,
 
@@ -59,19 +59,11 @@ impl AudioThreadManager {
     }
 }
 
-fn spawn_audio_thread(device_name: String) -> Result<mpsc::Sender<AudioCommand>, String> {
+fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, String> {
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || -> Result<(), String> {
         let host = cpal::default_host();
-        let device = host
-            .input_devices()
-            .map_err(|e| e.to_string())?
-            .find(|d| matches!(d.name(), Ok(name) if name == device_name))
-            .ok_or_else(|| "Device not found".to_string())?;
-
-        let config = device.default_input_config().map_err(|e| e.to_string())?;
-        let stream_config = config.clone().into();
 
         let writer = Arc::new(Mutex::new(None::<hound::WavWriter<BufWriter<File>>>));
         let writer_clone = Arc::clone(&writer);
@@ -80,9 +72,20 @@ fn spawn_audio_thread(device_name: String) -> Result<mpsc::Sender<AudioCommand>,
 
         while let Ok(cmd) = rx.recv() {
             match cmd {
-                AudioCommand::InitStream => {
-                    if maybe_stream.is_none() {
+                AudioCommand::InitStream(device_name) => {
+                    if maybe_stream.is_some() {
+                        println!("Stream is already initialized");
+                    } else {
+                        let device = host
+                            .input_devices()
+                            .map_err(|e| e.to_string())?
+                            .find(|d| matches!(d.name(), Ok(name) if name == device_name))
+                            .ok_or_else(|| "Device not found".to_string())?;
+                        let config = device.default_input_config().map_err(|e| e.to_string())?;
+                        let stream_config = config.clone().into();
+
                         let writer_for_closure = Arc::clone(&writer_clone);
+
                         match device.build_input_stream(
                             &stream_config,
                             move |data: &[f32], _: &cpal::InputCallbackInfo| {
@@ -102,8 +105,6 @@ fn spawn_audio_thread(device_name: String) -> Result<mpsc::Sender<AudioCommand>,
                             }
                             Err(e) => eprintln!("Failed to build stream: {}", e),
                         }
-                    } else {
-                        println!("Stream is already initialized");
                     }
                 }
                 AudioCommand::DestroyStream => {
