@@ -2,7 +2,7 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Stream, SupportedStreamConfig,
 };
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self};
 use std::{
     fs::File,
     io::BufWriter,
@@ -20,16 +20,16 @@ pub enum AudioCommand {
     CancelRecording(String),
 }
 
-pub struct AudioThread {
+pub struct AudioThreadManager {
     tx: Option<mpsc::Sender<AudioCommand>>,
 }
 
-impl AudioThread {
+impl AudioThreadManager {
     pub fn new() -> Self {
         Self { tx: None }
     }
 
-    fn open_thread(&mut self, device_name: String) -> Result<(), String> {
+    pub fn open(&mut self, device_name: String) -> Result<(), String> {
         if self.tx.is_some() {
             return Ok(());
         }
@@ -37,7 +37,7 @@ impl AudioThread {
         Ok(())
     }
 
-    fn close_thread(&mut self) -> Result<(), String> {
+    pub fn close(&mut self) -> Result<(), String> {
         if let Some(tx) = self.tx.take() {
             tx.send(AudioCommand::CloseThread)
                 .map_err(|e| e.to_string())?;
