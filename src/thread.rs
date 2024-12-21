@@ -13,10 +13,10 @@ use std::{
 pub enum AudioCommand {
     CloseThread,
 
-    InitRecordingSession(String),
+    InitRecordingSession(String, u16),
     CloseRecordingSession,
 
-    StartRecording(String, u16),
+    StartRecording(String),
     StopRecording,
     CancelRecording(String),
 }
@@ -70,13 +70,17 @@ fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, String> {
         let writer_clone = Arc::clone(&writer);
 
         let mut maybe_stream: Option<Stream> = None;
+        let mut selected_device_name: Option<String> = None;
+        let mut selected_bits_per_sample: Option<u16> = None;
 
         while let Ok(cmd) = rx.recv() {
             match cmd {
-                AudioCommand::InitRecordingSession(device_name) => {
+                AudioCommand::InitRecordingSession(device_name, bits_per_sample) => {
                     if maybe_stream.is_some() {
                         println!("Stream is already initialized");
                     } else {
+                        selected_device_name = Some(device_name);
+                        selected_bits_per_sample = Some(bits_per_sample);
                         let device = host
                             .input_devices()
                             .map_err(|e| e.to_string())?
