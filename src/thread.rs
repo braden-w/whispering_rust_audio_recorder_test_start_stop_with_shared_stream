@@ -10,10 +10,16 @@ use std::{
 };
 
 #[derive(Debug)]
+pub struct RecordingSessionConfig {
+    device_name: String,
+    bits_per_sample: u16,
+}
+
+#[derive(Debug)]
 pub enum AudioCommand {
     CloseThread,
 
-    InitRecordingSession(String, u16),
+    InitRecordingSession(RecordingSessionConfig),
     CloseRecordingSession,
 
     StartRecording(String),
@@ -70,21 +76,19 @@ fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, String> {
         let writer_clone = Arc::clone(&writer);
 
         let mut maybe_stream: Option<Stream> = None;
-        let mut selected_device_name: Option<String> = None;
-        let mut selected_bits_per_sample: Option<u16> = None;
+        let mut current_recording_session_config: Option<RecordingSessionConfig> = None;
 
         while let Ok(cmd) = rx.recv() {
             match cmd {
-                AudioCommand::InitRecordingSession(device_name, bits_per_sample) => {
+                AudioCommand::InitRecordingSession(recording_session_config) => {
                     if maybe_stream.is_some() {
                         println!("Stream is already initialized");
                     } else {
-                        selected_device_name = Some(device_name);
-                        selected_bits_per_sample = Some(bits_per_sample);
+                        current_recording_session_config = Some(recording_session_config);
                         let device = host
                             .input_devices()
                             .map_err(|e| e.to_string())?
-                            .find(|d| matches!(d.name(), Ok(name) if name == device_name))
+                            .find(|d| matches!(d.name(), Ok(name) if name == recording_session_config.device_name))
                             .ok_or_else(|| "Device not found".to_string())?;
                         let config = device.default_input_config().map_err(|e| e.to_string())?;
                         let stream_config = config.clone().into();
