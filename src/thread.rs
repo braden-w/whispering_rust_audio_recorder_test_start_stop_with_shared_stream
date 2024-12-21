@@ -1,6 +1,6 @@
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    Stream, SupportedStreamConfig,
+    Stream, StreamConfig, SupportedStreamConfig,
 };
 use std::sync::mpsc::{self};
 use std::{
@@ -10,7 +10,7 @@ use std::{
 };
 
 #[derive(Debug)]
-pub struct RecordingSessionConfig {
+pub struct UserRecordingSessionConfig {
     device_name: String,
     bits_per_sample: u16,
 }
@@ -19,7 +19,7 @@ pub struct RecordingSessionConfig {
 pub enum AudioCommand {
     CloseThread,
 
-    InitRecordingSession(RecordingSessionConfig),
+    InitRecordingSession(UserRecordingSessionConfig),
     CloseRecordingSession,
 
     StartRecording(String),
@@ -36,11 +36,11 @@ impl AudioThreadManager {
         Self { tx: None }
     }
 
-    pub fn open(&mut self, device_name: String) -> Result<(), String> {
+    pub fn open(&mut self) -> Result<(), String> {
         if self.tx.is_some() {
             return Ok(());
         }
-        self.tx = Some(spawn_audio_thread(device_name)?);
+        self.tx = Some(spawn_audio_thread()?);
         Ok(())
     }
 
@@ -76,7 +76,7 @@ fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, String> {
         let writer_clone = Arc::clone(&writer);
 
         let mut maybe_stream: Option<Stream> = None;
-        let mut current_recording_session_config: Option<RecordingSessionConfig> = None;
+        let mut current_recording_session_wav_writer_config: Option<hound::WavSpec> = None;
 
         while let Ok(cmd) = rx.recv() {
             match cmd {
@@ -84,15 +84,32 @@ fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, String> {
                     if maybe_stream.is_some() {
                         println!("Stream is already initialized");
                     } else {
-                        current_recording_session_config = Some(recording_session_config);
                         let device = host
                             .input_devices()
                             .map_err(|e| e.to_string())?
                             .find(|d| matches!(d.name(), Ok(name) if name == recording_session_config.device_name))
                             .ok_or_else(|| "Device not found".to_string())?;
-                        let config = device.default_input_config().map_err(|e| e.to_string())?;
-                        let stream_config = config.clone().into();
+                        let default_device_config =
+                            device.default_input_config().map_err(|e| e.to_string())?;
+                        current_recording_session_wav_writer_config = Some(hound::WavSpec {
+                            channels: default_device_config.channels(),
+                            sample_rate: default_device_config.sample_rate().0,
+                            bits_per_sample: recording_session_config.bits_per_sample,
+                            sample_format: match recording_session_config.bits_per_sample {
+                                16 => hound::SampleFormat::Int,
+                                24 => hound::SampleFormat::Int,
+                                32 => hound::SampleFormat::Float,
+                                _ => {
+                                    eprintln!(
+                                        "Unsupported bits per sample: {}",
+                                        recording_session_config.bits_per_sample
+                                    );
+                                    continue;
+                                }
+                            },
+                        });
 
+                        let stream_config = default_device_config.into();
                         let writer_for_closure = Arc::clone(&writer_clone);
 
                         match device.build_input_stream(
@@ -128,40 +145,21 @@ fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, String> {
                     println!("Audio thread exiting...");
                     break;
                 }
-                AudioCommand::StartRecording(filename, bits_per_sample) => {
-                    if let Some(_) = &maybe_stream {
-                        let spec = {
-                            let config: &SupportedStreamConfig = &config;
-                            hound::WavSpec {
-                                channels: config.channels(),
-                                sample_rate: config.sample_rate().0,
-                                bits_per_sample,
-                                sample_format: match bits_per_sample {
-                                    16 => hound::SampleFormat::Int,
-                                    24 => hound::SampleFormat::Int,
-                                    32 => hound::SampleFormat::Float,
-                                    _ => {
-                                        eprintln!(
-                                            "Unsupported bits per sample: {}",
-                                            bits_per_sample
-                                        );
-                                        continue;
-                                    }
-                                },
-                            }
-                        };
-                        match hound::WavWriter::create(&filename, spec) {
-                            Ok(new_writer) => {
-                                *writer.lock().unwrap() = Some(new_writer);
-                                println!(
-                                    "Recording started with {} bits per sample",
-                                    bits_per_sample
-                                );
-                            }
-                            Err(e) => eprintln!("Failed to create WAV writer: {}", e),
+                AudioCommand::StartRecording(filename) => {
+                    match hound::WavWriter::create(
+                        &filename,
+                        current_recording_session_wav_writer_config.unwrap(),
+                    ) {
+                        Ok(new_writer) => {
+                            *writer.lock().unwrap() = Some(new_writer);
+                            println!(
+                                "Recording started with {} bits per sample",
+                                current_recording_session_wav_writer_config
+                                    .unwrap()
+                                    .bits_per_sample
+                            );
                         }
-                    } else {
-                        println!("Stream not initialized. Please initialize stream first.");
+                        Err(e) => eprintln!("Failed to create WAV writer: {}", e),
                     }
                 }
                 AudioCommand::StopRecording => {
