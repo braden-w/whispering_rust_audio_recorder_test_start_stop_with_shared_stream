@@ -62,7 +62,6 @@ pub fn spawn_audio_thread(
         let host = cpal::default_host();
 
         let writer = Arc::new(Mutex::new(None::<hound::WavWriter<BufWriter<File>>>));
-        let writer_clone = Arc::clone(&writer);
 
         let mut current_recording_session: Option<RecordingSession> = None;
 
@@ -139,7 +138,8 @@ pub fn spawn_audio_thread(
                     };
 
                     // Run the input stream on a separate thread.
-                    let writer_clone = Arc::clone(&writer_clone);
+                    let writer_clone = Arc::clone(&writer);
+
                     let response_tx_clone = response_tx.clone();
 
                     let err_fn = move |err| {
