@@ -44,12 +44,17 @@ pub struct DeviceInfo {
 }
 
 fn ensure_thread_initialized() -> Result<()> {
+    println!("Ensuring thread is initialized...");
     let mut thread = AUDIO_THREAD.lock().unwrap();
     if thread.is_none() {
+        println!("Thread not initialized, creating new audio thread...");
         let (response_tx, response_rx) = mpsc::channel();
         let command_tx =
             spawn_audio_thread(response_tx).map_err(|e| RecorderError::SendError(e.to_string()))?;
         *thread = Some((command_tx, response_rx));
+        println!("Audio thread created successfully");
+    } else {
+        println!("Thread already initialized");
     }
     Ok(())
 }
@@ -85,15 +90,33 @@ pub fn enumerate_recording_devices() -> Result<Vec<DeviceInfo>> {
 }
 
 pub fn init_recording_session(settings: UserRecordingSessionConfig) -> Result<()> {
+    println!(
+        "Starting init_recording_session with settings: {:?}",
+        settings
+    );
     with_thread(|tx, rx| {
+        println!("Sending InitRecordingSession command...");
         tx.send(AudioCommand::InitRecordingSession(settings))
             .map_err(|e| RecorderError::SendError(e.to_string()))?;
 
+        println!("Waiting for response...");
         match rx.recv() {
-            Ok(AudioResponse::Success(_)) => Ok(()),
-            Ok(AudioResponse::Error(e)) => Err(RecorderError::AudioError(e)),
-            Ok(_) => Err(RecorderError::AudioError("Unexpected response".to_string())),
-            Err(e) => Err(RecorderError::ReceiveError(e.to_string())),
+            Ok(AudioResponse::Success(_)) => {
+                println!("Received success response");
+                Ok(())
+            }
+            Ok(AudioResponse::Error(e)) => {
+                println!("Received error response: {}", e);
+                Err(RecorderError::AudioError(e))
+            }
+            Ok(_) => {
+                println!("Received unexpected response");
+                Err(RecorderError::AudioError("Unexpected response".to_string()))
+            }
+            Err(e) => {
+                println!("Error receiving response: {}", e);
+                Err(RecorderError::ReceiveError(e.to_string()))
+            }
         }
     })
 }
