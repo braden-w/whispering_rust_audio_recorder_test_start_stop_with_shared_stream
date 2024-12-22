@@ -51,6 +51,7 @@ struct RecordingSession {
     settings: RecordingSessionSettings,
     stream: Stream,
     writer: Option<hound::WavWriter<BufWriter<File>>>,
+    spec: hound::WavSpec,
 }
 
 pub fn spawn_audio_thread(
@@ -86,98 +87,122 @@ pub fn spawn_audio_thread(
                         continue;
                     }
 
-                    let stream = {
-                        let device = match host.input_devices() {
-                            Ok(devices) => {
-                                let device_result = devices
+                    let device = match host.input_devices() {
+                        Ok(devices) => {
+                            let device_result = devices
                                 .into_iter()
                                 .find(|d| matches!(d.name(), Ok(name) if name == recording_session_config.device_name));
 
-                                match device_result {
-                                    Some(device) => device,
-                                    None => {
-                                        let _ = response_tx.send(AudioResponse::Error(
-                                            "Device not found".to_string(),
-                                        ));
-                                        continue;
-                                    }
+                            match device_result {
+                                Some(device) => device,
+                                None => {
+                                    let _ = response_tx
+                                        .send(AudioResponse::Error("Device not found".to_string()));
+                                    continue;
                                 }
                             }
-                            Err(e) => {
-                                let _ = response_tx.send(AudioResponse::Error(e.to_string()));
-                                continue;
-                            }
-                        };
+                        }
+                        Err(e) => {
+                            let _ = response_tx.send(AudioResponse::Error(e.to_string()));
+                            continue;
+                        }
+                    };
 
-                        let default_device_config = match device.default_input_config() {
-                            Ok(config) => config,
-                            Err(e) => {
-                                let _ = response_tx.send(AudioResponse::Error(e.to_string()));
-                                continue;
-                            }
-                        };
+                    let default_device_config = match device.default_input_config() {
+                        Ok(config) => config,
+                        Err(e) => {
+                            let _ = response_tx.send(AudioResponse::Error(e.to_string()));
+                            continue;
+                        }
+                    };
 
-                        let sample_format = match recording_session_config.bits_per_sample {
-                            16 | 24 => hound::SampleFormat::Int,
-                            32 => hound::SampleFormat::Float,
-                            _ => {
-                                let _ = response_tx.send(AudioResponse::Error(format!(
-                                    "Unsupported bits per sample: {}",
-                                    recording_session_config.bits_per_sample
-                                )));
-                                continue;
-                            }
-                        };
-
-                        let stream_config = default_device_config.into();
-                        let writer_for_closure = Arc::clone(&writer_clone);
-                        let response_tx_clone = response_tx.clone();
-
-                        let stream = match device.build_input_stream(
-                            &stream_config,
-                            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                                let mut max_level = 0.0f32;
-                                if let Some(writer) = &mut *writer_for_closure.lock().unwrap() {
-                                    for &sample in data {
-                                        max_level = max_level.max(sample.abs());
-                                        let _ = writer.write_sample(sample);
-                                    }
-                                }
-                            },
-                            move |err| {
-                                let _ = response_tx_clone.send(AudioResponse::Error(format!(
-                                    "Error in stream: {}",
-                                    err
-                                )));
-                            },
-                            None,
-                        ) {
-                            Ok(stream) => stream,
-                            Err(e) => {
-                                let _ = response_tx.send(AudioResponse::Error(format!(
-                                    "Failed to build stream: {}",
-                                    e
-                                )));
-                                continue;
-                            }
-                        };
-                        if let Err(e) = stream.play() {
+                    let sample_format = match recording_session_config.bits_per_sample {
+                        16 | 24 => hound::SampleFormat::Int,
+                        32 => hound::SampleFormat::Float,
+                        _ => {
                             let _ = response_tx.send(AudioResponse::Error(format!(
-                                "Failed to start stream: {}",
+                                "Unsupported bits per sample: {}",
+                                recording_session_config.bits_per_sample
+                            )));
+                            continue;
+                        }
+                    };
+
+                    let stream_config: cpal::StreamConfig = default_device_config.into();
+                    let writer_for_closure = Arc::clone(&writer_clone);
+                    let response_tx_clone = response_tx.clone();
+                    let sample_rate = stream_config.sample_rate.0;
+                    let channels = stream_config.channels as u16;
+
+                    // Create a spec that matches our input format
+                    let spec = hound::WavSpec {
+                        channels,
+                        sample_rate,
+                        bits_per_sample: recording_session_config.bits_per_sample,
+                        sample_format,
+                    };
+
+                    let stream = match device.build_input_stream(
+                        &stream_config,
+                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                            let mut max_level = 0.0f32;
+                            if let Some(writer) = &mut *writer_for_closure.lock().unwrap() {
+                                for &sample in data {
+                                    max_level = max_level.max(sample.abs());
+                                    match spec.sample_format {
+                                        hound::SampleFormat::Float => {
+                                            let _ = writer.write_sample(sample);
+                                        }
+                                        hound::SampleFormat::Int => {
+                                            // Convert float to integer based on bits_per_sample
+                                            match spec.bits_per_sample {
+                                                16 => {
+                                                    let int_sample = (sample * 32767.0) as i16;
+                                                    let _ = writer.write_sample(int_sample);
+                                                }
+                                                24 => {
+                                                    let int_sample = (sample * 8388607.0) as i32;
+                                                    let _ = writer.write_sample(int_sample);
+                                                }
+                                                _ => unreachable!(),
+                                            };
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        move |err| {
+                            let _ = response_tx_clone
+                                .send(AudioResponse::Error(format!("Error in stream: {}", err)));
+                        },
+                        None,
+                    ) {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            let _ = response_tx.send(AudioResponse::Error(format!(
+                                "Failed to build stream: {}",
                                 e
                             )));
                             continue;
                         }
-                        stream
                     };
+
+                    if let Err(e) = stream.play() {
+                        let _ = response_tx.send(AudioResponse::Error(format!(
+                            "Failed to start stream: {}",
+                            e
+                        )));
+                        continue;
+                    }
 
                     current_recording_session = Some(RecordingSession {
                         settings: RecordingSessionSettings {
                             device_name: recording_session_config.device_name,
                             bits_per_sample: recording_session_config.bits_per_sample,
                         },
-                        stream,
+                        stream: stream,
                         writer: None,
+                        spec: spec,
                     });
 
                     response_tx.send(AudioResponse::Success(
@@ -195,32 +220,17 @@ pub fn spawn_audio_thread(
                         Some(session) => session,
                     };
 
-                    let spec = hound::WavSpec {
-                        channels: 1,
-                        sample_rate: 44100, // Standard sample rate
-                        bits_per_sample: recording_session.settings.bits_per_sample,
-                        sample_format: match recording_session.settings.bits_per_sample {
-                            16 | 24 => hound::SampleFormat::Int,
-                            32 => hound::SampleFormat::Float,
-                            _ => {
-                                response_tx.send(AudioResponse::Error(
-                                    "Invalid bits per sample".to_string(),
-                                ))?;
+                    let new_writer =
+                        match hound::WavWriter::create(&filename, recording_session.spec) {
+                            Ok(writer) => writer,
+                            Err(e) => {
+                                response_tx.send(AudioResponse::Error(format!(
+                                    "Failed to create WAV writer: {}",
+                                    e
+                                )))?;
                                 continue;
                             }
-                        },
-                    };
-
-                    let new_writer = match hound::WavWriter::create(&filename, spec) {
-                        Ok(writer) => writer,
-                        Err(e) => {
-                            response_tx.send(AudioResponse::Error(format!(
-                                "Failed to create WAV writer: {}",
-                                e
-                            )))?;
-                            continue;
-                        }
-                    };
+                        };
 
                     *writer.lock().unwrap() = Some(new_writer);
                     response_tx.send(AudioResponse::Success("Recording started".to_string()))?;
