@@ -2,6 +2,8 @@ use crate::thread::{spawn_audio_thread, AudioCommand, AudioResponse, UserRecordi
 use once_cell::sync::Lazy;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Mutex;
+use thiserror::Error;
+use tracing::{debug, error, info, warn};
 
 // Global static mutex to hold the audio thread sender and state
 static AUDIO_THREAD: Lazy<Mutex<Option<(Sender<AudioCommand>, Receiver<AudioResponse>)>>> =
@@ -10,30 +12,23 @@ static AUDIO_THREAD: Lazy<Mutex<Option<(Sender<AudioCommand>, Receiver<AudioResp
 // Track current recording state
 static CURRENT_RECORDING: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum RecorderError {
+    #[error("Audio thread not initialized")]
     ThreadNotInitialized,
+    #[error("Failed to send command: {0}")]
     SendError(String),
+    #[error("Failed to receive response: {0}")]
     ReceiveError(String),
+    #[error("Audio error: {0}")]
     AudioError(String),
-    IoError(std::io::Error),
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("No active recording session")]
     NoActiveRecording,
+    #[error("Failed to acquire lock: {0}")]
+    LockError(String),
 }
-
-impl std::fmt::Display for RecorderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RecorderError::ThreadNotInitialized => write!(f, "Audio thread not initialized"),
-            RecorderError::SendError(e) => write!(f, "Failed to send command: {}", e),
-            RecorderError::ReceiveError(e) => write!(f, "Failed to receive response: {}", e),
-            RecorderError::AudioError(e) => write!(f, "Audio error: {}", e),
-            RecorderError::IoError(e) => write!(f, "IO error: {}", e),
-            RecorderError::NoActiveRecording => write!(f, "No active recording session"),
-        }
-    }
-}
-
-impl std::error::Error for RecorderError {}
 
 type Result<T> = std::result::Result<T, RecorderError>;
 
@@ -44,17 +39,20 @@ pub struct DeviceInfo {
 }
 
 fn ensure_thread_initialized() -> Result<()> {
-    println!("Ensuring thread is initialized...");
-    let mut thread = AUDIO_THREAD.lock().unwrap();
+    debug!("Ensuring thread is initialized...");
+    let mut thread = AUDIO_THREAD
+        .lock()
+        .map_err(|e| RecorderError::LockError(e.to_string()))?;
+
     if thread.is_none() {
-        println!("Thread not initialized, creating new audio thread...");
+        debug!("Thread not initialized, creating new audio thread...");
         let (response_tx, response_rx) = mpsc::channel();
         let command_tx =
             spawn_audio_thread(response_tx).map_err(|e| RecorderError::SendError(e.to_string()))?;
         *thread = Some((command_tx, response_rx));
-        println!("Audio thread created successfully");
+        info!("Audio thread created successfully");
     } else {
-        println!("Thread already initialized");
+        debug!("Thread already initialized");
     }
     Ok(())
 }
@@ -64,57 +62,72 @@ where
     F: FnOnce(&Sender<AudioCommand>, &Receiver<AudioResponse>) -> Result<T>,
 {
     ensure_thread_initialized()?;
-    let thread = AUDIO_THREAD.lock().unwrap();
+    let thread = AUDIO_THREAD
+        .lock()
+        .map_err(|e| RecorderError::LockError(e.to_string()))?;
     let (tx, rx) = thread.as_ref().ok_or(RecorderError::ThreadNotInitialized)?;
     f(tx, rx)
 }
 
 pub fn enumerate_recording_devices() -> Result<Vec<DeviceInfo>> {
+    debug!("Enumerating recording devices");
     with_thread(|tx, rx| {
         tx.send(AudioCommand::EnumerateRecordingDevices)
             .map_err(|e| RecorderError::SendError(e.to_string()))?;
 
         match rx.recv() {
-            Ok(AudioResponse::RecordingDeviceList(devices)) => Ok(devices
-                .into_iter()
-                .map(|label| DeviceInfo {
-                    device_id: label.clone(),
-                    label,
-                })
-                .collect()),
-            Ok(AudioResponse::Error(e)) => Err(RecorderError::AudioError(e)),
-            Ok(_) => Err(RecorderError::AudioError("Unexpected response".to_string())),
-            Err(e) => Err(RecorderError::ReceiveError(e.to_string())),
+            Ok(AudioResponse::RecordingDeviceList(devices)) => {
+                info!("Found {} recording devices", devices.len());
+                Ok(devices
+                    .into_iter()
+                    .map(|label| DeviceInfo {
+                        device_id: label.clone(),
+                        label,
+                    })
+                    .collect())
+            }
+            Ok(AudioResponse::Error(e)) => {
+                error!("Failed to enumerate devices: {}", e);
+                Err(RecorderError::AudioError(e))
+            }
+            Ok(_) => {
+                error!("Unexpected response while enumerating devices");
+                Err(RecorderError::AudioError("Unexpected response".to_string()))
+            }
+            Err(e) => {
+                error!("Failed to receive device enumeration response: {}", e);
+                Err(RecorderError::ReceiveError(e.to_string()))
+            }
         }
     })
 }
 
 pub fn init_recording_session(settings: UserRecordingSessionConfig) -> Result<()> {
-    println!(
+    info!(
         "Starting init_recording_session with settings: {:?}",
         settings
     );
     with_thread(|tx, rx| {
-        println!("Sending InitRecordingSession command...");
+        debug!("Sending InitRecordingSession command...");
         tx.send(AudioCommand::InitRecordingSession(settings))
             .map_err(|e| RecorderError::SendError(e.to_string()))?;
 
-        println!("Waiting for response...");
+        debug!("Waiting for response...");
         match rx.recv() {
             Ok(AudioResponse::Success(_)) => {
-                println!("Received success response");
+                info!("Recording session initialized successfully");
                 Ok(())
             }
             Ok(AudioResponse::Error(e)) => {
-                println!("Received error response: {}", e);
+                error!("Failed to initialize recording session: {}", e);
                 Err(RecorderError::AudioError(e))
             }
             Ok(_) => {
-                println!("Received unexpected response");
+                error!("Unexpected response during initialization");
                 Err(RecorderError::AudioError("Unexpected response".to_string()))
             }
             Err(e) => {
-                println!("Error receiving response: {}", e);
+                error!("Failed to receive initialization response: {}", e);
                 Err(RecorderError::ReceiveError(e.to_string()))
             }
         }
@@ -158,8 +171,12 @@ pub fn start_recording(recording_id: String) -> Result<()> {
 }
 
 pub fn stop_recording() -> Result<Vec<u8>> {
+    debug!("Stopping recording");
     with_thread(|tx, rx| {
-        let current_recording = CURRENT_RECORDING.lock().unwrap().clone();
+        let current_recording = CURRENT_RECORDING
+            .lock()
+            .map_err(|e| RecorderError::LockError(e.to_string()))?
+            .clone();
         let filename = current_recording.ok_or(RecorderError::NoActiveRecording)?;
 
         tx.send(AudioCommand::StopRecording)
@@ -167,18 +184,33 @@ pub fn stop_recording() -> Result<Vec<u8>> {
 
         match rx.recv() {
             Ok(AudioResponse::Success(_)) => {
-                // Read the WAV file into memory
-                let contents = std::fs::read(&filename).map_err(|e| RecorderError::IoError(e))?;
+                debug!("Reading WAV file contents");
+                let contents = std::fs::read(&filename)?;
 
-                // Clean up the file
-                let _ = std::fs::remove_file(&filename);
-                *CURRENT_RECORDING.lock().unwrap() = None;
+                debug!("Cleaning up temporary file");
+                if let Err(e) = std::fs::remove_file(&filename) {
+                    warn!("Failed to clean up temporary file: {}", e);
+                }
 
+                *CURRENT_RECORDING
+                    .lock()
+                    .map_err(|e| RecorderError::LockError(e.to_string()))? = None;
+
+                info!("Recording stopped successfully ({} bytes)", contents.len());
                 Ok(contents)
             }
-            Ok(AudioResponse::Error(e)) => Err(RecorderError::AudioError(e)),
-            Ok(_) => Err(RecorderError::AudioError("Unexpected response".to_string())),
-            Err(e) => Err(RecorderError::ReceiveError(e.to_string())),
+            Ok(AudioResponse::Error(e)) => {
+                error!("Failed to stop recording: {}", e);
+                Err(RecorderError::AudioError(e))
+            }
+            Ok(_) => {
+                error!("Unexpected response while stopping recording");
+                Err(RecorderError::AudioError("Unexpected response".to_string()))
+            }
+            Err(e) => {
+                error!("Failed to receive stop recording response: {}", e);
+                Err(RecorderError::ReceiveError(e.to_string()))
+            }
         }
     })
 }
