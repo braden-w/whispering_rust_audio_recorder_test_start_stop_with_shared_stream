@@ -42,6 +42,17 @@ pub enum AudioResponse {
     Success(String),
 }
 
+struct RecordingSessionSettings {
+    device_name: String,
+    bits_per_sample: u16,
+}
+
+struct RecordingSession {
+    settings: RecordingSessionSettings,
+    stream: Stream,
+    writer: Option<hound::WavWriter<BufWriter<File>>>,
+}
+
 pub fn spawn_audio_thread(
     response_tx: mpsc::Sender<AudioResponse>,
 ) -> Result<mpsc::Sender<AudioCommand>, SendError<AudioCommand>> {
@@ -53,8 +64,7 @@ pub fn spawn_audio_thread(
         let writer = Arc::new(Mutex::new(None::<hound::WavWriter<BufWriter<File>>>));
         let writer_clone = Arc::clone(&writer);
 
-        let mut maybe_stream: Option<Stream> = None;
-        let mut current_recording_session_wav_writer_config: Option<hound::WavSpec> = None;
+        let mut current_recording_session: Option<RecordingSession> = None;
 
         while let Ok(cmd) = rx.recv() {
             match cmd {
@@ -69,104 +79,109 @@ pub fn spawn_audio_thread(
                     response_tx.send(AudioResponse::RecordingDeviceList(devices))?;
                 }
                 AudioCommand::InitRecordingSession(recording_session_config) => {
-                    if maybe_stream.is_some() {
-                        let _ = response_tx.send(AudioResponse::Error(
+                    if current_recording_session.is_some() {
+                        response_tx.send(AudioResponse::Error(
                             "Stream already initialized".to_string(),
-                        ));
+                        ))?;
                         continue;
                     }
 
-                    let device = match host.input_devices() {
-                        Ok(devices) => {
-                            let device_result = devices
+                    let stream = {
+                        let device = match host.input_devices() {
+                            Ok(devices) => {
+                                let device_result = devices
                                 .into_iter()
                                 .find(|d| matches!(d.name(), Ok(name) if name == recording_session_config.device_name));
 
-                            match device_result {
-                                Some(device) => device,
-                                None => {
-                                    let _ = response_tx
-                                        .send(AudioResponse::Error("Device not found".to_string()));
-                                    continue;
+                                match device_result {
+                                    Some(device) => device,
+                                    None => {
+                                        let _ = response_tx.send(AudioResponse::Error(
+                                            "Device not found".to_string(),
+                                        ));
+                                        continue;
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            let _ = response_tx.send(AudioResponse::Error(e.to_string()));
-                            continue;
-                        }
-                    };
-
-                    let default_device_config = match device.default_input_config() {
-                        Ok(config) => config,
-                        Err(e) => {
-                            let _ = response_tx.send(AudioResponse::Error(e.to_string()));
-                            continue;
-                        }
-                    };
-
-                    let sample_format = match recording_session_config.bits_per_sample {
-                        16 | 24 => hound::SampleFormat::Int,
-                        32 => hound::SampleFormat::Float,
-                        _ => {
-                            let _ = response_tx.send(AudioResponse::Error(format!(
-                                "Unsupported bits per sample: {}",
-                                recording_session_config.bits_per_sample
-                            )));
-                            continue;
-                        }
-                    };
-
-                    current_recording_session_wav_writer_config = Some(hound::WavSpec {
-                        channels: default_device_config.channels(),
-                        sample_rate: default_device_config.sample_rate().0,
-                        bits_per_sample: recording_session_config.bits_per_sample,
-                        sample_format,
-                    });
-
-                    let stream_config = default_device_config.into();
-                    let writer_for_closure = Arc::clone(&writer_clone);
-                    let response_tx_clone = response_tx.clone();
-
-                    let stream = match device.build_input_stream(
-                        &stream_config,
-                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                            let mut max_level = 0.0f32;
-                            if let Some(writer) = &mut *writer_for_closure.lock().unwrap() {
-                                for &sample in data {
-                                    max_level = max_level.max(sample.abs());
-                                    let _ = writer.write_sample(sample);
-                                }
+                            Err(e) => {
+                                let _ = response_tx.send(AudioResponse::Error(e.to_string()));
+                                continue;
                             }
-                        },
-                        move |err| {
-                            let _ = response_tx_clone
-                                .send(AudioResponse::Error(format!("Error in stream: {}", err)));
-                        },
-                        None,
-                    ) {
-                        Ok(stream) => stream,
-                        Err(e) => {
+                        };
+
+                        let default_device_config = match device.default_input_config() {
+                            Ok(config) => config,
+                            Err(e) => {
+                                let _ = response_tx.send(AudioResponse::Error(e.to_string()));
+                                continue;
+                            }
+                        };
+
+                        let sample_format = match recording_session_config.bits_per_sample {
+                            16 | 24 => hound::SampleFormat::Int,
+                            32 => hound::SampleFormat::Float,
+                            _ => {
+                                let _ = response_tx.send(AudioResponse::Error(format!(
+                                    "Unsupported bits per sample: {}",
+                                    recording_session_config.bits_per_sample
+                                )));
+                                continue;
+                            }
+                        };
+
+                        let stream_config = default_device_config.into();
+                        let writer_for_closure = Arc::clone(&writer_clone);
+                        let response_tx_clone = response_tx.clone();
+
+                        let stream = match device.build_input_stream(
+                            &stream_config,
+                            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                                let mut max_level = 0.0f32;
+                                if let Some(writer) = &mut *writer_for_closure.lock().unwrap() {
+                                    for &sample in data {
+                                        max_level = max_level.max(sample.abs());
+                                        let _ = writer.write_sample(sample);
+                                    }
+                                }
+                            },
+                            move |err| {
+                                let _ = response_tx_clone.send(AudioResponse::Error(format!(
+                                    "Error in stream: {}",
+                                    err
+                                )));
+                            },
+                            None,
+                        ) {
+                            Ok(stream) => stream,
+                            Err(e) => {
+                                let _ = response_tx.send(AudioResponse::Error(format!(
+                                    "Failed to build stream: {}",
+                                    e
+                                )));
+                                continue;
+                            }
+                        };
+                        if let Err(e) = stream.play() {
                             let _ = response_tx.send(AudioResponse::Error(format!(
-                                "Failed to build stream: {}",
+                                "Failed to start stream: {}",
                                 e
                             )));
                             continue;
                         }
+                        stream
                     };
 
-                    if let Err(e) = stream.play() {
-                        let _ = response_tx.send(AudioResponse::Error(format!(
-                            "Failed to start stream: {}",
-                            e
-                        )));
-                        continue;
-                    }
-
-                    maybe_stream = Some(stream);
+                    current_recording_session = Some(RecordingSession {
+                        settings: RecordingSessionSettings {
+                            device_name: recording_session_config.device_name,
+                            bits_per_sample: recording_session_config.bits_per_sample,
+                        },
+                        stream,
+                        writer: None,
+                    });
                 }
                 AudioCommand::StartRecording(filename) => {
-                    let wav_config = match current_recording_session_wav_writer_config {
+                    let wav_config = match current_recording_session {
                         None => {
                             response_tx.send(AudioResponse::Error(
                                 "Recording session not initialized".to_string(),
