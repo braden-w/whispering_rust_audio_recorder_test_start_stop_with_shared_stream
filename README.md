@@ -2,6 +2,10 @@
 
 A test project demonstrating audio recording with start/stop functionality using shared streams in Rust. Built with CPAL (Cross-Platform Audio Library).
 
+I created this project as an experimental prototype for implementing native audio recording in [Whispering](https://github.com/braden-w/whispering), an open-source transcription application. The goal was to explore using Rust's CPAL library to provide more reliable and efficient audio recording capabilities compared to web-based recording solutions.
+
+This was my first time working with threads (ever!) and I learned a lot. I'm sure there are many improvements that could be made, but I'm happy with the results. Message passing is hard!
+
 ## Features
 
 - List available audio input devices
