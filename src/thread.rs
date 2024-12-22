@@ -122,7 +122,7 @@ pub fn spawn_audio_thread(
                     let spec = hound::WavSpec {
                         channels: config.channels(),
                         sample_rate: config.sample_rate().0,
-                        bits_per_sample: bytes_per_sample * 8 as _,
+                        bits_per_sample: (bytes_per_sample * 8) as u16,
                         sample_format: match config.sample_format() {
                             cpal::SampleFormat::I8
                             | cpal::SampleFormat::I16
