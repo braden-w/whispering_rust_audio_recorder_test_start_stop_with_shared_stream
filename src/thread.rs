@@ -50,7 +50,6 @@ struct RecordingSessionSettings {
 struct RecordingSession {
     settings: RecordingSessionSettings,
     stream: Stream,
-    writer: Option<hound::WavWriter<BufWriter<File>>>,
     spec: hound::WavSpec,
 }
 
@@ -198,7 +197,6 @@ pub fn spawn_audio_thread(
                             bits_per_sample: recording_session_config.bits_per_sample,
                         },
                         stream: stream,
-                        writer: None,
                         spec: spec,
                     });
 
