@@ -179,6 +179,10 @@ pub fn spawn_audio_thread(
                         stream,
                         writer: None,
                     });
+
+                    response_tx.send(AudioResponse::Success(
+                        "Recording session initialized".to_string(),
+                    ))?;
                 }
                 AudioCommand::StartRecording(filename) => {
                     let recording_session = match &current_recording_session {
