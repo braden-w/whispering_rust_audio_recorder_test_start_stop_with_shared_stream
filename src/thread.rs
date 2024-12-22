@@ -27,7 +27,7 @@ pub enum RecordingState {
 #[derive(Debug)]
 pub enum AudioCommand {
     CloseThread,
-    EnumerateAudioDevices,
+    EnumerateRecordingDevices,
     InitRecordingSession(UserRecordingSessionConfig),
     CloseRecordingSession,
     StartRecording(String),
@@ -60,7 +60,7 @@ pub fn spawn_audio_thread(
 
         while let Ok(cmd) = rx.recv() {
             match cmd {
-                AudioCommand::EnumerateAudioDevices => {
+                AudioCommand::EnumerateRecordingDevices => {
                     let devices = host
                         .input_devices()
                         .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
