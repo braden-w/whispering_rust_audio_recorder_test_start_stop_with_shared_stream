@@ -37,8 +37,7 @@ pub enum AudioCommand {
 
 #[derive(Debug)]
 pub enum AudioResponse {
-    DeviceList(Vec<String>),
-    StateUpdate(RecordingState),
+    RecordingDeviceList(Vec<String>),
     RecordingProgress { duration_ms: u64, peak_level: f32 },
     Error(String),
     Success(String),
@@ -68,7 +67,7 @@ pub fn spawn_audio_thread(
                             let _ = response_tx.send(AudioResponse::Error(e.to_string()));
                             vec![]
                         });
-                    response_tx.send(AudioResponse::DeviceList(devices))?;
+                    response_tx.send(AudioResponse::RecordingDeviceList(devices))?;
                 }
                 AudioCommand::InitRecordingSession(recording_session_config) => {
                     if maybe_stream.is_some() {
