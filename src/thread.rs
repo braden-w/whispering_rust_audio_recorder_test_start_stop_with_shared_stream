@@ -143,15 +143,11 @@ pub fn spawn_audio_thread(
 
                     let response_tx_clone = response_tx.clone();
 
-                    let err_fn = move |err| {
-                        let _ = response_tx_clone
-                            .send(AudioResponse::Error(format!("Error in stream: {}", err)));
-                    };
-
                     fn build_input_stream<T>(
                         device: &cpal::Device,
                         config: &cpal::StreamConfig,
                         writer: Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>,
+                        error_callback: impl FnMut(cpal::StreamError) + Send + 'static,
                     ) -> Result<cpal::Stream, cpal::BuildStreamError>
                     where
                         T: Sample + hound::Sample + cpal::SizedSample,
@@ -165,28 +161,28 @@ pub fn spawn_audio_thread(
                                     }
                                 }
                             },
-                            move |err| {
-                                let _ = response_tx_clone.send(AudioResponse::Error(format!(
-                                    "Error in stream: {}",
-                                    err
-                                )));
-                            },
+                            error_callback,
                             None,
                         )
                     }
 
+                    let err_fn = move |err| {
+                        let _ = response_tx_clone
+                            .send(AudioResponse::Error(format!("Error in stream: {}", err)));
+                    };
+
                     let stream = match config.sample_format() {
                         cpal::SampleFormat::I8 => {
-                            build_input_stream::<i8>(&device, &config.into(), writer_clone)
+                            build_input_stream::<i8>(&device, &config.into(), writer_clone, err_fn)
                         }
                         cpal::SampleFormat::I16 => {
-                            build_input_stream::<i16>(&device, &config.into(), writer_clone)
+                            build_input_stream::<i16>(&device, &config.into(), writer_clone, err_fn)
                         }
                         cpal::SampleFormat::I32 => {
-                            build_input_stream::<i32>(&device, &config.into(), writer_clone)
+                            build_input_stream::<i32>(&device, &config.into(), writer_clone, err_fn)
                         }
                         cpal::SampleFormat::F32 => {
-                            build_input_stream::<f32>(&device, &config.into(), writer_clone)
+                            build_input_stream::<f32>(&device, &config.into(), writer_clone, err_fn)
                         }
                         _ => {
                             response_tx.send(AudioResponse::Error(format!(
