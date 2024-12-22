@@ -64,7 +64,7 @@ where
     f(tx, rx)
 }
 
-pub async fn enumerate_recording_devices() -> Result<Vec<DeviceInfo>> {
+pub fn enumerate_recording_devices() -> Result<Vec<DeviceInfo>> {
     with_thread(|tx, rx| {
         tx.send(AudioCommand::EnumerateRecordingDevices)
             .map_err(|e| RecorderError::SendError(e.to_string()))?;
@@ -84,7 +84,7 @@ pub async fn enumerate_recording_devices() -> Result<Vec<DeviceInfo>> {
     })
 }
 
-pub async fn init_recording_session(settings: UserRecordingSessionConfig) -> Result<()> {
+pub fn init_recording_session(settings: UserRecordingSessionConfig) -> Result<()> {
     with_thread(|tx, rx| {
         tx.send(AudioCommand::InitRecordingSession(settings))
             .map_err(|e| RecorderError::SendError(e.to_string()))?;
@@ -98,7 +98,7 @@ pub async fn init_recording_session(settings: UserRecordingSessionConfig) -> Res
     })
 }
 
-pub async fn close_recording_session() -> Result<()> {
+pub fn close_recording_session() -> Result<()> {
     with_thread(|tx, rx| {
         tx.send(AudioCommand::CloseRecordingSession)
             .map_err(|e| RecorderError::SendError(e.to_string()))?;
@@ -115,7 +115,7 @@ pub async fn close_recording_session() -> Result<()> {
     })
 }
 
-pub async fn start_recording(recording_id: String) -> Result<()> {
+pub fn start_recording(recording_id: String) -> Result<()> {
     let filename = format!("{}.wav", recording_id);
 
     with_thread(|tx, rx| {
@@ -134,7 +134,7 @@ pub async fn start_recording(recording_id: String) -> Result<()> {
     })
 }
 
-pub async fn stop_recording() -> Result<Vec<u8>> {
+pub fn stop_recording() -> Result<Vec<u8>> {
     with_thread(|tx, rx| {
         let current_recording = CURRENT_RECORDING.lock().unwrap().clone();
         let filename = current_recording.ok_or(RecorderError::NoActiveRecording)?;
@@ -160,7 +160,7 @@ pub async fn stop_recording() -> Result<Vec<u8>> {
     })
 }
 
-pub async fn cancel_recording() -> Result<()> {
+pub fn cancel_recording() -> Result<()> {
     with_thread(|tx, rx| {
         let current_recording = CURRENT_RECORDING.lock().unwrap().clone();
         let filename = current_recording.ok_or(RecorderError::NoActiveRecording)?;

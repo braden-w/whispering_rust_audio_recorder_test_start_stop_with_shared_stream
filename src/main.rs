@@ -28,7 +28,7 @@ fn main() -> std::result::Result<(), String> {
         let parts: Vec<&str> = command.split_whitespace().collect();
         match parts.get(0).map(|s| *s) {
             Some("devices") => {
-                let devices = futures::executor::block_on(enumerate_recording_devices())
+                let devices = enumerate_recording_devices()
                     .map_err(|e| format!("Failed to enumerate devices: {}", e))?;
                 println!("\nAvailable recording devices:");
                 for device in devices {
@@ -56,12 +56,12 @@ fn main() -> std::result::Result<(), String> {
                     bits_per_sample,
                 };
 
-                match futures::executor::block_on(init_recording_session(config)) {
+                match init_recording_session(config) {
                     Ok(_) => println!("Recording session initialized"),
                     Err(e) => println!("Error initializing recording session: {}", e),
                 }
             }
-            Some("destroy") => match futures::executor::block_on(close_recording_session()) {
+            Some("destroy") => match close_recording_session() {
                 Ok(_) => println!("Recording session destroyed"),
                 Err(e) => println!("Error destroying recording session: {}", e),
             },
@@ -71,24 +71,24 @@ fn main() -> std::result::Result<(), String> {
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "output".to_string());
 
-                match futures::executor::block_on(start_recording(id)) {
+                match start_recording(id) {
                     Ok(_) => println!("Recording started"),
                     Err(e) => println!("Error starting recording: {}", e),
                 }
             }
-            Some("stop") => match futures::executor::block_on(stop_recording()) {
+            Some("stop") => match stop_recording() {
                 Ok(wav_data) => {
                     println!("Recording stopped and saved ({} bytes)", wav_data.len());
                 }
                 Err(e) => println!("Error stopping recording: {}", e),
             },
-            Some("cancel") => match futures::executor::block_on(cancel_recording()) {
+            Some("cancel") => match cancel_recording() {
                 Ok(_) => println!("Recording cancelled"),
                 Err(e) => println!("Error cancelling recording: {}", e),
             },
             Some("exit") => {
                 // Try to clean up any active recording session before exiting
-                if let Err(e) = futures::executor::block_on(close_recording_session()) {
+                if let Err(e) = close_recording_session() {
                     println!("Warning: Failed to clean up recording session: {}", e);
                 }
                 println!("Exiting...");
