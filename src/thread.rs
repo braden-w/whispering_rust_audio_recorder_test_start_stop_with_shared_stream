@@ -192,17 +192,25 @@ pub fn spawn_audio_thread(
                     response_tx.send(AudioResponse::Success("Recording started".to_string()))?;
                 }
                 AudioCommand::StopRecording => {
-                    let mut writer_guard = writer.lock().unwrap();
-                    let Some(writer) = writer_guard.take() else {
-                        response_tx.send(AudioResponse::Error(
-                            "No active recording to stop".to_string(),
-                        ))?;
-                        continue;
-                    };
+                    let wav_writer_result = writer
+                        .lock()
+                        .map_err(|e| format!("Failed to acquire lock: {}", e))
+                        .and_then(|mut guard| {
+                            guard
+                                .take()
+                                .ok_or_else(|| "No active recording to stop".to_string())
+                        });
 
-                    drop(writer);
-                    let _ =
-                        response_tx.send(AudioResponse::Success("Recording stopped".to_string()));
+                    match wav_writer_result {
+                        Ok(writer) => {
+                            drop(writer);
+                            response_tx
+                                .send(AudioResponse::Success("Recording stopped".to_string()))?;
+                        }
+                        Err(err) => {
+                            response_tx.send(AudioResponse::Error(err))?;
+                        }
+                    }
                 }
                 AudioCommand::CancelRecording(filename) => {
                     let mut writer_guard = writer.lock().unwrap();
