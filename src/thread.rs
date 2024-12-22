@@ -117,52 +117,110 @@ pub fn spawn_audio_thread(
 
                     let config: cpal::SupportedStreamConfig = default_device_config.into();
                     println!("Stream config: {:?}", config);
-                    let writer_for_closure = Arc::clone(&writer_clone);
-                    let response_tx_clone = response_tx.clone();
 
                     let bytes_per_sample = config.sample_format().sample_size();
                     let spec = hound::WavSpec {
                         channels: config.channels(),
                         sample_rate: config.sample_rate().0,
                         bits_per_sample: bytes_per_sample * 8 as _,
-                        sample_format: if config.sample_format().is_float() {
-                            hound::SampleFormat::Float
-                        } else {
-                            hound::SampleFormat::Int
+                        sample_format: match config.sample_format() {
+                            cpal::SampleFormat::I8
+                            | cpal::SampleFormat::I16
+                            | cpal::SampleFormat::I32 => hound::SampleFormat::Int,
+                            cpal::SampleFormat::F32 => hound::SampleFormat::Float,
+                            _ => {
+                                response_tx.send(AudioResponse::Error(format!(
+                                    "Unsupported sample format: {:?}",
+                                    config.sample_format()
+                                )))?;
+                                continue;
+                            }
                         },
                     };
 
-                    let stream = match device.build_input_stream(
-                        &config.into(),
-                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                            if let Some(writer) = &mut *writer_for_closure.lock().unwrap() {
-                                for &sample in data {
-                                    println!("Processed sample: {}", sample);
-                                    writer.write_sample(sample).unwrap();
+                    // Run the input stream on a separate thread.
+                    let writer_clone = Arc::clone(&writer_clone);
+                    let response_tx_clone = response_tx.clone();
+
+                    let err_fn = move |err| {
+                        let _ = response_tx_clone
+                            .send(AudioResponse::Error(format!("Error in stream: {}", err)));
+                    };
+
+                    let stream = match config.sample_format() {
+                        cpal::SampleFormat::I8 => device.build_input_stream(
+                            &config.into(),
+                            move |data: &[i8], _: &_| {
+                                if let Some(writer) = &mut *writer_clone.lock().unwrap() {
+                                    for &sample in data {
+                                        writer.write_sample(sample).unwrap();
+                                    }
                                 }
-                            }
-                        },
-                        move |err| {
-                            let _ = response_tx_clone
-                                .send(AudioResponse::Error(format!("Error in stream: {}", err)));
-                        },
-                        None,
-                    ) {
+                            },
+                            err_fn,
+                            None,
+                        ),
+                        cpal::SampleFormat::I16 => device.build_input_stream(
+                            &config.into(),
+                            move |data: &[i16], _: &_| {
+                                if let Some(writer) = &mut *writer_clone.lock().unwrap() {
+                                    for &sample in data {
+                                        writer.write_sample(sample).unwrap();
+                                    }
+                                }
+                            },
+                            err_fn,
+                            None,
+                        ),
+                        cpal::SampleFormat::I32 => device.build_input_stream(
+                            &config.into(),
+                            move |data: &[i32], _: &_| {
+                                if let Some(writer) = &mut *writer_clone.lock().unwrap() {
+                                    for &sample in data {
+                                        writer.write_sample(sample).unwrap();
+                                    }
+                                }
+                            },
+                            err_fn,
+                            None,
+                        ),
+                        cpal::SampleFormat::F32 => device.build_input_stream(
+                            &config.into(),
+                            move |data: &[f32], _: &_| {
+                                if let Some(writer) = &mut *writer_clone.lock().unwrap() {
+                                    for &sample in data {
+                                        writer.write_sample(sample).unwrap();
+                                    }
+                                }
+                            },
+                            err_fn,
+                            None,
+                        ),
+                        _ => {
+                            response_tx.send(AudioResponse::Error(format!(
+                                "Unsupported sample format: {:?}",
+                                config.sample_format()
+                            )))?;
+                            continue;
+                        }
+                    };
+
+                    let stream = match stream {
                         Ok(stream) => stream,
                         Err(e) => {
-                            let _ = response_tx.send(AudioResponse::Error(format!(
+                            response_tx.send(AudioResponse::Error(format!(
                                 "Failed to build stream: {}",
                                 e
-                            )));
+                            )))?;
                             continue;
                         }
                     };
 
                     if let Err(e) = stream.play() {
-                        let _ = response_tx.send(AudioResponse::Error(format!(
+                        response_tx.send(AudioResponse::Error(format!(
                             "Failed to start stream: {}",
                             e
-                        )));
+                        )))?;
                         continue;
                     }
 
