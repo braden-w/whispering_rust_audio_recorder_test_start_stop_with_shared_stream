@@ -668,6 +668,7 @@ dependencies = [
  "anyhow",
  "cpal",
  "hound",
+ "once_cell",
 ]
 
 [[package]]
