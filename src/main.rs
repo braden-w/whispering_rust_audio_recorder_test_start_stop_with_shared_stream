@@ -6,6 +6,49 @@ use recorder::{
 };
 use thread::UserRecordingSessionConfig;
 
+fn parse_command(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current_arg = String::new();
+    let mut in_quotes = false;
+    let mut escaped = false;
+
+    for c in input.chars() {
+        match (c, in_quotes, escaped) {
+            ('\\', _, false) => escaped = true,
+            ('"', _, true) => {
+                current_arg.push('"');
+                escaped = false;
+            }
+            ('"', false, false) => in_quotes = true,
+            ('"', true, false) => {
+                if !current_arg.is_empty() {
+                    args.push(current_arg.clone());
+                    current_arg.clear();
+                }
+                in_quotes = false;
+            }
+            (' ', false, false) => {
+                if !current_arg.is_empty() {
+                    args.push(current_arg.clone());
+                    current_arg.clear();
+                }
+            }
+            (c, _, true) => {
+                current_arg.push('\\');
+                current_arg.push(c);
+                escaped = false;
+            }
+            (c, _, false) => current_arg.push(c),
+        }
+    }
+
+    if !current_arg.is_empty() {
+        args.push(current_arg);
+    }
+
+    args
+}
+
 fn main() -> std::result::Result<(), String> {
     println!("Audio Recorder CLI");
     println!("Available commands:");
@@ -16,17 +59,17 @@ fn main() -> std::result::Result<(), String> {
     println!("  stop                                 - Stop recording and save the file");
     println!("  cancel                               - Cancel recording without saving");
     println!("  exit                                 - Exit the program");
+    println!("\nNote: Use quotes for arguments containing spaces, e.g., init \"My Device\" 32");
 
     loop {
         let mut input = String::new();
         std::io::stdin()
             .read_line(&mut input)
             .map_err(|e| e.to_string())?;
-        let command = input.trim();
+        let parts = parse_command(input.trim());
+        println!("parts: {:?}", parts);
 
-        // Split command into parts for handling arguments
-        let parts: Vec<&str> = command.split_whitespace().collect();
-        match parts.get(0).map(|s| *s) {
+        match parts.get(0).map(|s| s.as_str()) {
             Some("devices") => {
                 let devices = enumerate_recording_devices()
                     .map_err(|e| format!("Failed to enumerate devices: {}", e))?;
