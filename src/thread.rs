@@ -219,15 +219,19 @@ pub fn spawn_audio_thread(
                     };
 
                     drop(writer);
-                    match std::fs::remove_file(&filename) {
-                        Ok(_) => response_tx.send(AudioResponse::Success(
-                            "Recording cancelled and file deleted".to_string(),
-                        )),
-                        Err(e) => response_tx.send(AudioResponse::Error(format!(
-                            "Failed to delete partial recording: {}",
-                            e
-                        ))),
-                    }?;
+                    std::fs::remove_file(&filename).map_or_else(
+                        |e| {
+                            response_tx.send(AudioResponse::Error(format!(
+                                "Failed to delete partial recording: {}",
+                                e
+                            )))
+                        },
+                        |_| {
+                            response_tx.send(AudioResponse::Success(
+                                "Recording cancelled and file deleted".to_string(),
+                            ))
+                        },
+                    )?;
                 }
                 AudioCommand::CloseRecordingSession => {
                     if let Some(stream) = maybe_stream.take() {
