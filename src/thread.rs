@@ -181,16 +181,33 @@ pub fn spawn_audio_thread(
                     });
                 }
                 AudioCommand::StartRecording(filename) => {
-                    let wav_config = match current_recording_session {
+                    let recording_session = match &current_recording_session {
                         None => {
                             response_tx.send(AudioResponse::Error(
                                 "Recording session not initialized".to_string(),
                             ))?;
                             continue;
                         }
-                        Some(config) => config,
+                        Some(session) => session,
                     };
-                    let new_writer = match hound::WavWriter::create(&filename, wav_config) {
+
+                    let spec = hound::WavSpec {
+                        channels: 1,
+                        sample_rate: 44100, // Standard sample rate
+                        bits_per_sample: recording_session.settings.bits_per_sample,
+                        sample_format: match recording_session.settings.bits_per_sample {
+                            16 | 24 => hound::SampleFormat::Int,
+                            32 => hound::SampleFormat::Float,
+                            _ => {
+                                response_tx.send(AudioResponse::Error(
+                                    "Invalid bits per sample".to_string(),
+                                ))?;
+                                continue;
+                            }
+                        },
+                    };
+
+                    let new_writer = match hound::WavWriter::create(&filename, spec) {
                         Ok(writer) => writer,
                         Err(e) => {
                             response_tx.send(AudioResponse::Error(format!(
@@ -254,15 +271,15 @@ pub fn spawn_audio_thread(
                     }
                 }
                 AudioCommand::CloseRecordingSession => {
-                    if let Some(stream) = maybe_stream.take() {
-                        drop(stream);
-                        let _ = response_tx.send(AudioResponse::Success(
-                            "Stream destroyed successfully".to_string(),
-                        ));
+                    if let Some(session) = current_recording_session.take() {
+                        drop(session.stream);
+                        response_tx.send(AudioResponse::Success(
+                            "Recording session closed successfully".to_string(),
+                        ))?;
                     } else {
-                        let _ = response_tx.send(AudioResponse::Error(
-                            "No active stream to destroy".to_string(),
-                        ));
+                        response_tx.send(AudioResponse::Error(
+                            "No active recording session to close".to_string(),
+                        ))?;
                     }
                 }
                 AudioCommand::CloseThread => {
