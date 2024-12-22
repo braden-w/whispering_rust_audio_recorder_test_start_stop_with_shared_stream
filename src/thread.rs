@@ -11,13 +11,15 @@ use std::{
 
 #[derive(Debug)]
 pub struct UserRecordingSessionConfig {
-    device_name: String,
-    bits_per_sample: u16,
+    pub device_name: String,
+    pub bits_per_sample: u16,
 }
 
 #[derive(Debug)]
 pub enum AudioCommand {
     CloseThread,
+
+    EnumerateAudioDevices,
 
     InitRecordingSession(UserRecordingSessionConfig),
     CloseRecordingSession,
@@ -27,7 +29,14 @@ pub enum AudioCommand {
     CancelRecording(String),
 }
 
-pub fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, String> {
+#[derive(Debug)]
+pub enum AudioResponse {
+    DeviceList(Vec<String>),
+}
+
+pub fn spawn_audio_thread(
+    response_tx: mpsc::Sender<AudioResponse>,
+) -> Result<mpsc::Sender<AudioCommand>, String> {
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || -> Result<(), String> {
@@ -41,6 +50,15 @@ pub fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, String> {
 
         while let Ok(cmd) = rx.recv() {
             match cmd {
+                AudioCommand::EnumerateAudioDevices => {
+                    let devices = host.input_devices().map_err(|e| e.to_string())?;
+                    let device_names = devices
+                        .map(|d| d.name().unwrap_or_default())
+                        .collect::<Vec<String>>();
+                    response_tx
+                        .send(AudioResponse::DeviceList(device_names))
+                        .map_err(|e| e.to_string())?;
+                }
                 AudioCommand::InitRecordingSession(recording_session_config) => {
                     if maybe_stream.is_some() {
                         println!("Stream is already initialized");
