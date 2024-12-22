@@ -115,56 +115,25 @@ pub fn spawn_audio_thread(
                         }
                     };
 
-                    let sample_format = match recording_session_config.bits_per_sample {
-                        16 | 24 => hound::SampleFormat::Int,
-                        32 => hound::SampleFormat::Float,
-                        _ => {
-                            let _ = response_tx.send(AudioResponse::Error(format!(
-                                "Unsupported bits per sample: {}",
-                                recording_session_config.bits_per_sample
-                            )));
-                            continue;
-                        }
-                    };
-                    let stream_config: cpal::StreamConfig = default_device_config.into();
-                    println!("Stream config: {:?}", stream_config);
+                    let config: cpal::StreamConfig = default_device_config.into();
+                    println!("Stream config: {:?}", config);
                     let writer_for_closure = Arc::clone(&writer_clone);
                     let response_tx_clone = response_tx.clone();
                     // Create a spec that matches our input format
                     let spec = hound::WavSpec {
-                        channels: stream_config.channels as u16,
-                        sample_rate: stream_config.sample_rate.0,
-                        bits_per_sample: recording_session_config.bits_per_sample,
-                        sample_format,
+                        channels: config.channels as _,
+                        sample_rate: config.sample_rate.0 as _,
+                        bits_per_sample: 32,
+                        sample_format: hound::SampleFormat::Float,
                     };
 
                     let stream = match device.build_input_stream(
-                        &stream_config,
+                        &config,
                         move |data: &[f32], _: &cpal::InputCallbackInfo| {
                             if let Some(writer) = &mut *writer_for_closure.lock().unwrap() {
                                 for &sample in data {
-                                    // Amplify the sample by 10x (reduced from 20x) to make it audible
-                                    // but prevent excessive amplification
-                                    let amplified_sample = sample * 10.0;
-                                    // Clamp the value between -1.0 and 1.0 to prevent distortion
-                                    let clamped_sample = amplified_sample.max(-1.0).min(1.0);
-                                    match spec.sample_format {
-                                        hound::SampleFormat::Float => {
-                                            writer.write_sample(clamped_sample).unwrap_or_default();
-                                        }
-                                        hound::SampleFormat::Int => match spec.bits_per_sample {
-                                            16 => {
-                                                let int_sample = (clamped_sample * 32767.0) as i16;
-                                                writer.write_sample(int_sample).unwrap_or_default();
-                                            }
-                                            24 => {
-                                                let int_sample =
-                                                    (clamped_sample * 8388607.0) as i32;
-                                                writer.write_sample(int_sample).unwrap_or_default();
-                                            }
-                                            _ => unreachable!(),
-                                        },
-                                    }
+                                    println!("Processed sample: {}", sample);
+                                    writer.write_sample(sample).unwrap();
                                 }
                             }
                         },
