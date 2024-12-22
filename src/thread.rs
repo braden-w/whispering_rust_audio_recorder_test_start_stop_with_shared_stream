@@ -1,3 +1,4 @@
+use cpal::Sample;
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Stream,
@@ -147,55 +148,46 @@ pub fn spawn_audio_thread(
                             .send(AudioResponse::Error(format!("Error in stream: {}", err)));
                     };
 
+                    fn build_input_stream<T>(
+                        device: &cpal::Device,
+                        config: &cpal::StreamConfig,
+                        writer: Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>,
+                    ) -> Result<cpal::Stream, cpal::BuildStreamError>
+                    where
+                        T: Sample + hound::Sample + cpal::SizedSample,
+                    {
+                        device.build_input_stream(
+                            config,
+                            move |data: &[T], _: &_| {
+                                if let Some(writer) = &mut *writer.lock().unwrap() {
+                                    for &sample in data {
+                                        writer.write_sample(sample).unwrap();
+                                    }
+                                }
+                            },
+                            move |err| {
+                                let _ = response_tx_clone.send(AudioResponse::Error(format!(
+                                    "Error in stream: {}",
+                                    err
+                                )));
+                            },
+                            None,
+                        )
+                    }
+
                     let stream = match config.sample_format() {
-                        cpal::SampleFormat::I8 => device.build_input_stream(
-                            &config.into(),
-                            move |data: &[i8], _: &_| {
-                                if let Some(writer) = &mut *writer_clone.lock().unwrap() {
-                                    for &sample in data {
-                                        writer.write_sample(sample).unwrap();
-                                    }
-                                }
-                            },
-                            err_fn,
-                            None,
-                        ),
-                        cpal::SampleFormat::I16 => device.build_input_stream(
-                            &config.into(),
-                            move |data: &[i16], _: &_| {
-                                if let Some(writer) = &mut *writer_clone.lock().unwrap() {
-                                    for &sample in data {
-                                        writer.write_sample(sample).unwrap();
-                                    }
-                                }
-                            },
-                            err_fn,
-                            None,
-                        ),
-                        cpal::SampleFormat::I32 => device.build_input_stream(
-                            &config.into(),
-                            move |data: &[i32], _: &_| {
-                                if let Some(writer) = &mut *writer_clone.lock().unwrap() {
-                                    for &sample in data {
-                                        writer.write_sample(sample).unwrap();
-                                    }
-                                }
-                            },
-                            err_fn,
-                            None,
-                        ),
-                        cpal::SampleFormat::F32 => device.build_input_stream(
-                            &config.into(),
-                            move |data: &[f32], _: &_| {
-                                if let Some(writer) = &mut *writer_clone.lock().unwrap() {
-                                    for &sample in data {
-                                        writer.write_sample(sample).unwrap();
-                                    }
-                                }
-                            },
-                            err_fn,
-                            None,
-                        ),
+                        cpal::SampleFormat::I8 => {
+                            build_input_stream::<i8>(&device, &config.into(), writer_clone)
+                        }
+                        cpal::SampleFormat::I16 => {
+                            build_input_stream::<i16>(&device, &config.into(), writer_clone)
+                        }
+                        cpal::SampleFormat::I32 => {
+                            build_input_stream::<i32>(&device, &config.into(), writer_clone)
+                        }
+                        cpal::SampleFormat::F32 => {
+                            build_input_stream::<f32>(&device, &config.into(), writer_clone)
+                        }
                         _ => {
                             response_tx.send(AudioResponse::Error(format!(
                                 "Unsupported sample format: {:?}",
