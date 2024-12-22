@@ -194,28 +194,25 @@ pub fn spawn_audio_thread(
                         response_tx.send(AudioResponse::Success("Recording started".to_string()));
                 }
                 AudioCommand::StopRecording => {
-                    let writer_guard = writer.lock().unwrap();
-                    if writer_guard.is_none() {
-                        let _ = response_tx.send(AudioResponse::Error(
+                    let mut writer_guard = writer.lock().unwrap();
+                    let Some(writer) = writer_guard.take() else {
+                        response_tx.send(AudioResponse::Error(
                             "No active recording to stop".to_string(),
-                        ));
+                        ))?;
                         continue;
-                    }
+                    };
 
-                    drop(writer_guard);
-                    if let Some(writer) = writer.lock().unwrap().take() {
-                        let _ = writer.finalize();
-                    }
-
+                    drop(writer);
                     let _ =
                         response_tx.send(AudioResponse::Success("Recording stopped".to_string()));
                 }
                 AudioCommand::CancelRecording(filename) => {
                     let mut writer_guard = writer.lock().unwrap();
                     let Some(writer) = writer_guard.take() else {
-                        return response_tx.send(AudioResponse::Error(
+                        response_tx.send(AudioResponse::Error(
                             "No active recording to cancel".to_string(),
-                        ));
+                        ))?;
+                        continue;
                     };
 
                     drop(writer);
