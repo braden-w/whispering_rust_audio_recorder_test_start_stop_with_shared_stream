@@ -2,7 +2,7 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Stream,
 };
-use std::sync::mpsc::{self};
+use std::sync::mpsc::{self, SendError};
 use std::{
     fs::File,
     io::BufWriter,
@@ -15,15 +15,21 @@ pub struct UserRecordingSessionConfig {
     pub bits_per_sample: u16,
 }
 
+#[derive(Debug, Clone)]
+pub enum RecordingState {
+    Idle,
+    Initialized,
+    Recording,
+    Paused,
+    Error(String),
+}
+
 #[derive(Debug)]
 pub enum AudioCommand {
     CloseThread,
-
     EnumerateAudioDevices,
-
     InitRecordingSession(UserRecordingSessionConfig),
     CloseRecordingSession,
-
     StartRecording(String),
     StopRecording,
     CancelRecording(String),
@@ -32,14 +38,18 @@ pub enum AudioCommand {
 #[derive(Debug)]
 pub enum AudioResponse {
     DeviceList(Vec<String>),
+    StateUpdate(RecordingState),
+    RecordingProgress { duration_ms: u64, peak_level: f32 },
+    Error(String),
+    Success(String),
 }
 
 pub fn spawn_audio_thread(
     response_tx: mpsc::Sender<AudioResponse>,
-) -> Result<mpsc::Sender<AudioCommand>, String> {
+) -> Result<mpsc::Sender<AudioCommand>, SendError<AudioCommand>> {
     let (tx, rx) = mpsc::channel();
 
-    std::thread::spawn(move || -> Result<(), String> {
+    std::thread::spawn(move || -> Result<(), SendError<AudioResponse>> {
         let host = cpal::default_host();
 
         let writer = Arc::new(Mutex::new(None::<hound::WavWriter<BufWriter<File>>>));
@@ -51,114 +61,191 @@ pub fn spawn_audio_thread(
         while let Ok(cmd) = rx.recv() {
             match cmd {
                 AudioCommand::EnumerateAudioDevices => {
-                    let devices = host.input_devices().map_err(|e| e.to_string())?;
-                    let device_names = devices
-                        .map(|d| d.name().unwrap_or_default())
-                        .collect::<Vec<String>>();
-                    response_tx
-                        .send(AudioResponse::DeviceList(device_names))
-                        .map_err(|e| e.to_string())?;
+                    let devices = host
+                        .input_devices()
+                        .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
+                        .unwrap_or_else(|e| {
+                            let _ = response_tx.send(AudioResponse::Error(e.to_string()));
+                            vec![]
+                        });
+                    response_tx.send(AudioResponse::DeviceList(devices))?;
                 }
                 AudioCommand::InitRecordingSession(recording_session_config) => {
                     if maybe_stream.is_some() {
-                        println!("Stream is already initialized");
-                    } else {
-                        let device = host
-                            .input_devices()
-                            .map_err(|e| e.to_string())?
-                            .find(|d| matches!(d.name(), Ok(name) if name == recording_session_config.device_name))
-                            .ok_or_else(|| "Device not found".to_string())?;
-                        let default_device_config =
-                            device.default_input_config().map_err(|e| e.to_string())?;
-                        current_recording_session_wav_writer_config = Some(hound::WavSpec {
-                            channels: default_device_config.channels(),
-                            sample_rate: default_device_config.sample_rate().0,
-                            bits_per_sample: recording_session_config.bits_per_sample,
-                            sample_format: match recording_session_config.bits_per_sample {
-                                16 => hound::SampleFormat::Int,
-                                24 => hound::SampleFormat::Int,
-                                32 => hound::SampleFormat::Float,
-                                _ => {
-                                    eprintln!(
-                                        "Unsupported bits per sample: {}",
-                                        recording_session_config.bits_per_sample
-                                    );
+                        let _ = response_tx.send(AudioResponse::Error(
+                            "Stream already initialized".to_string(),
+                        ));
+                        continue;
+                    }
+
+                    let device = match host.input_devices() {
+                        Ok(devices) => {
+                            let device_result = devices
+                                .into_iter()
+                                .find(|d| matches!(d.name(), Ok(name) if name == recording_session_config.device_name));
+
+                            match device_result {
+                                Some(device) => device,
+                                None => {
+                                    let _ = response_tx
+                                        .send(AudioResponse::Error("Device not found".to_string()));
                                     continue;
                                 }
-                            },
-                        });
-
-                        let stream_config = default_device_config.into();
-                        let writer_for_closure = Arc::clone(&writer_clone);
-
-                        match device.build_input_stream(
-                            &stream_config,
-                            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                                if let Some(writer) = &mut *writer_for_closure.lock().unwrap() {
-                                    for &sample in data {
-                                        let _ = writer.write_sample(sample);
-                                    }
-                                }
-                            },
-                            |err| eprintln!("Stream error: {}", err),
-                            None,
-                        ) {
-                            Ok(stream) => {
-                                let _ = stream.play();
-                                maybe_stream = Some(stream);
-                                println!("Stream initialized successfully");
                             }
-                            Err(e) => eprintln!("Failed to build stream: {}", e),
                         }
+                        Err(e) => {
+                            let _ = response_tx.send(AudioResponse::Error(e.to_string()));
+                            continue;
+                        }
+                    };
+
+                    let default_device_config = match device.default_input_config() {
+                        Ok(config) => config,
+                        Err(e) => {
+                            let _ = response_tx.send(AudioResponse::Error(e.to_string()));
+                            continue;
+                        }
+                    };
+
+                    let sample_format = match recording_session_config.bits_per_sample {
+                        16 | 24 => hound::SampleFormat::Int,
+                        32 => hound::SampleFormat::Float,
+                        _ => {
+                            let _ = response_tx.send(AudioResponse::Error(format!(
+                                "Unsupported bits per sample: {}",
+                                recording_session_config.bits_per_sample
+                            )));
+                            continue;
+                        }
+                    };
+
+                    current_recording_session_wav_writer_config = Some(hound::WavSpec {
+                        channels: default_device_config.channels(),
+                        sample_rate: default_device_config.sample_rate().0,
+                        bits_per_sample: recording_session_config.bits_per_sample,
+                        sample_format,
+                    });
+
+                    let stream_config = default_device_config.into();
+                    let writer_for_closure = Arc::clone(&writer_clone);
+                    let response_tx_clone = response_tx.clone();
+
+                    let stream = match device.build_input_stream(
+                        &stream_config,
+                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                            let mut max_level = 0.0f32;
+                            if let Some(writer) = &mut *writer_for_closure.lock().unwrap() {
+                                for &sample in data {
+                                    max_level = max_level.max(sample.abs());
+                                    let _ = writer.write_sample(sample);
+                                }
+                            }
+                        },
+                        move |err| {
+                            let _ = response_tx_clone
+                                .send(AudioResponse::Error(format!("Error in stream: {}", err)));
+                        },
+                        None,
+                    ) {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            let _ = response_tx.send(AudioResponse::Error(format!(
+                                "Failed to build stream: {}",
+                                e
+                            )));
+                            continue;
+                        }
+                    };
+
+                    if let Err(e) = stream.play() {
+                        let _ = response_tx.send(AudioResponse::Error(format!(
+                            "Failed to start stream: {}",
+                            e
+                        )));
+                        continue;
                     }
+
+                    maybe_stream = Some(stream);
+                }
+                AudioCommand::StartRecording(filename) => {
+                    let wav_config = match current_recording_session_wav_writer_config {
+                        Some(config) => config,
+                        None => {
+                            let _ = response_tx.send(AudioResponse::Error(
+                                "Recording session not initialized".to_string(),
+                            ));
+                            continue;
+                        }
+                    };
+
+                    let new_writer = match hound::WavWriter::create(&filename, wav_config) {
+                        Ok(writer) => writer,
+                        Err(e) => {
+                            let _ = response_tx.send(AudioResponse::Error(format!(
+                                "Failed to create WAV writer: {}",
+                                e
+                            )));
+                            continue;
+                        }
+                    };
+
+                    *writer.lock().unwrap() = Some(new_writer);
+                    let _ =
+                        response_tx.send(AudioResponse::Success("Recording started".to_string()));
+                }
+                AudioCommand::StopRecording => {
+                    let writer_guard = writer.lock().unwrap();
+                    if writer_guard.is_none() {
+                        let _ = response_tx.send(AudioResponse::Error(
+                            "No active recording to stop".to_string(),
+                        ));
+                        continue;
+                    }
+
+                    drop(writer_guard);
+                    if let Some(writer) = writer.lock().unwrap().take() {
+                        let _ = writer.finalize();
+                    }
+
+                    let _ =
+                        response_tx.send(AudioResponse::Success("Recording stopped".to_string()));
+                }
+                AudioCommand::CancelRecording(filename) => {
+                    let mut writer_guard = writer.lock().unwrap();
+                    let Some(writer) = writer_guard.take() else {
+                        return response_tx.send(AudioResponse::Error(
+                            "No active recording to cancel".to_string(),
+                        ));
+                    };
+
+                    drop(writer);
+                    match std::fs::remove_file(&filename) {
+                        Ok(_) => response_tx.send(AudioResponse::Success(
+                            "Recording cancelled and file deleted".to_string(),
+                        )),
+                        Err(e) => response_tx.send(AudioResponse::Error(format!(
+                            "Failed to delete partial recording: {}",
+                            e
+                        ))),
+                    }?;
                 }
                 AudioCommand::CloseRecordingSession => {
                     if let Some(stream) = maybe_stream.take() {
                         drop(stream);
-                        println!("Stream destroyed successfully");
+                        let _ = response_tx.send(AudioResponse::Success(
+                            "Stream destroyed successfully".to_string(),
+                        ));
                     } else {
-                        println!("No active stream to destroy");
+                        let _ = response_tx.send(AudioResponse::Error(
+                            "No active stream to destroy".to_string(),
+                        ));
                     }
                 }
                 AudioCommand::CloseThread => {
-                    println!("Audio thread exiting...");
+                    let _ = response_tx.send(AudioResponse::Success(
+                        "Audio thread exiting...".to_string(),
+                    ));
                     break;
-                }
-                AudioCommand::StartRecording(filename) => {
-                    match hound::WavWriter::create(
-                        &filename,
-                        current_recording_session_wav_writer_config.unwrap(),
-                    ) {
-                        Ok(new_writer) => {
-                            *writer.lock().unwrap() = Some(new_writer);
-                            println!(
-                                "Recording started with {} bits per sample",
-                                current_recording_session_wav_writer_config
-                                    .unwrap()
-                                    .bits_per_sample
-                            );
-                        }
-                        Err(e) => eprintln!("Failed to create WAV writer: {}", e),
-                    }
-                }
-                AudioCommand::StopRecording => {
-                    if let Some(writer) = writer.lock().unwrap().take() {
-                        let _ = writer.finalize();
-                        println!("Recording stopped");
-                    } else {
-                        println!("No active recording to stop");
-                    }
-                }
-                AudioCommand::CancelRecording(filename) => {
-                    if let Some(writer) = writer.lock().unwrap().take() {
-                        drop(writer);
-                        if let Err(e) = std::fs::remove_file(filename) {
-                            eprintln!("Failed to delete partial recording: {}", e);
-                        }
-                        println!("Recording cancelled and file deleted");
-                    } else {
-                        println!("No active recording to cancel");
-                    }
                 }
             }
         }
