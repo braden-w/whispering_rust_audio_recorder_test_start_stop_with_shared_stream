@@ -213,28 +213,32 @@ pub fn spawn_audio_thread(
                     }
                 }
                 AudioCommand::CancelRecording(filename) => {
-                    let mut writer_guard = writer.lock().unwrap();
-                    let Some(writer) = writer_guard.take() else {
-                        response_tx.send(AudioResponse::Error(
-                            "No active recording to cancel".to_string(),
-                        ))?;
-                        continue;
-                    };
+                    let wav_writer_result = writer
+                        .lock()
+                        .map_err(|e| format!("Failed to acquire lock: {}", e))
+                        .and_then(|mut guard| {
+                            guard
+                                .take()
+                                .ok_or_else(|| "No active recording to cancel".to_string())
+                        });
 
-                    drop(writer);
-                    std::fs::remove_file(&filename).map_or_else(
-                        |e| {
-                            response_tx.send(AudioResponse::Error(format!(
-                                "Failed to delete partial recording: {}",
-                                e
-                            )))
-                        },
-                        |_| {
-                            response_tx.send(AudioResponse::Success(
-                                "Recording cancelled and file deleted".to_string(),
-                            ))
-                        },
-                    )?;
+                    match wav_writer_result {
+                        Ok(writer) => {
+                            drop(writer);
+                            match std::fs::remove_file(&filename) {
+                                Ok(_) => response_tx.send(AudioResponse::Success(
+                                    "Recording cancelled and file deleted".to_string(),
+                                ))?,
+                                Err(e) => response_tx.send(AudioResponse::Error(format!(
+                                    "Failed to delete partial recording: {}",
+                                    e
+                                )))?,
+                            }
+                        }
+                        Err(err) => {
+                            response_tx.send(AudioResponse::Error(err))?;
+                        }
+                    }
                 }
                 AudioCommand::CloseRecordingSession => {
                     if let Some(stream) = maybe_stream.take() {
