@@ -38,7 +38,6 @@ pub enum AudioCommand {
 #[derive(Debug)]
 pub enum AudioResponse {
     RecordingDeviceList(Vec<String>),
-    RecordingProgress { duration_ms: u64, peak_level: f32 },
     Error(String),
     Success(String),
 }
