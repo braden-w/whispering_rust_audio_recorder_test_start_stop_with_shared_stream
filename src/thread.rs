@@ -115,20 +115,25 @@ pub fn spawn_audio_thread(
                         }
                     };
 
-                    let config: cpal::StreamConfig = default_device_config.into();
+                    let config: cpal::SupportedStreamConfig = default_device_config.into();
                     println!("Stream config: {:?}", config);
                     let writer_for_closure = Arc::clone(&writer_clone);
                     let response_tx_clone = response_tx.clone();
-                    // Create a spec that matches our input format
+
+                    let bytes_per_sample = config.sample_format().sample_size();
                     let spec = hound::WavSpec {
-                        channels: config.channels as _,
-                        sample_rate: config.sample_rate.0 as _,
-                        bits_per_sample: 32,
-                        sample_format: hound::SampleFormat::Float,
+                        channels: config.channels(),
+                        sample_rate: config.sample_rate().0,
+                        bits_per_sample: bytes_per_sample * 8 as _,
+                        sample_format: if config.sample_format().is_float() {
+                            hound::SampleFormat::Float
+                        } else {
+                            hound::SampleFormat::Int
+                        },
                     };
 
                     let stream = match device.build_input_stream(
-                        &config,
+                        &config.into(),
                         move |data: &[f32], _: &cpal::InputCallbackInfo| {
                             if let Some(writer) = &mut *writer_for_closure.lock().unwrap() {
                                 for &sample in data {
