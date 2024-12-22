@@ -131,13 +131,10 @@ pub fn spawn_audio_thread(
                     let stream_config: cpal::StreamConfig = default_device_config.into();
                     let writer_for_closure = Arc::clone(&writer_clone);
                     let response_tx_clone = response_tx.clone();
-                    let sample_rate = stream_config.sample_rate.0;
-                    let channels = stream_config.channels as u16;
-
                     // Create a spec that matches our input format
                     let spec = hound::WavSpec {
-                        channels,
-                        sample_rate,
+                        channels: stream_config.channels,
+                        sample_rate: stream_config.sample_rate.0,
                         bits_per_sample: recording_session_config.bits_per_sample,
                         sample_format,
                     };
