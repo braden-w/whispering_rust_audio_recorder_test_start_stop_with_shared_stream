@@ -169,29 +169,27 @@ pub fn spawn_audio_thread(
                 }
                 AudioCommand::StartRecording(filename) => {
                     let wav_config = match current_recording_session_wav_writer_config {
-                        Some(config) => config,
                         None => {
-                            let _ = response_tx.send(AudioResponse::Error(
+                            response_tx.send(AudioResponse::Error(
                                 "Recording session not initialized".to_string(),
-                            ));
+                            ))?;
                             continue;
                         }
+                        Some(config) => config,
                     };
-
                     let new_writer = match hound::WavWriter::create(&filename, wav_config) {
                         Ok(writer) => writer,
                         Err(e) => {
-                            let _ = response_tx.send(AudioResponse::Error(format!(
+                            response_tx.send(AudioResponse::Error(format!(
                                 "Failed to create WAV writer: {}",
                                 e
-                            )));
+                            )))?;
                             continue;
                         }
                     };
 
                     *writer.lock().unwrap() = Some(new_writer);
-                    let _ =
-                        response_tx.send(AudioResponse::Success("Recording started".to_string()));
+                    response_tx.send(AudioResponse::Success("Recording started".to_string()))?;
                 }
                 AudioCommand::StopRecording => {
                     let mut writer_guard = writer.lock().unwrap();
