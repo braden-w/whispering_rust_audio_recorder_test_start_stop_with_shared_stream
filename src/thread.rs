@@ -1,6 +1,6 @@
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    Stream, StreamConfig, SupportedStreamConfig,
+    Stream,
 };
 use std::sync::mpsc::{self};
 use std::{
@@ -27,46 +27,7 @@ pub enum AudioCommand {
     CancelRecording(String),
 }
 
-pub struct AudioThreadManager {
-    tx: Option<mpsc::Sender<AudioCommand>>,
-}
-
-impl AudioThreadManager {
-    pub fn new() -> Self {
-        Self { tx: None }
-    }
-
-    pub fn open(&mut self) -> Result<(), String> {
-        if self.tx.is_some() {
-            return Ok(());
-        }
-        self.tx = Some(spawn_audio_thread()?);
-        Ok(())
-    }
-
-    pub fn close(&mut self) -> Result<(), String> {
-        if let Some(tx) = self.tx.take() {
-            tx.send(AudioCommand::CloseThread)
-                .map_err(|e| e.to_string())?;
-        }
-        self.tx = None;
-        Ok(())
-    }
-
-    pub fn send_command(&self, command: AudioCommand) -> Result<(), String> {
-        let tx = self
-            .tx
-            .as_ref()
-            .ok_or_else(|| "Thread not running".to_string())?;
-        tx.send(command).map_err(|e| e.to_string())
-    }
-
-    pub fn is_running(&self) -> bool {
-        self.tx.is_some()
-    }
-}
-
-fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, String> {
+pub fn spawn_audio_thread() -> Result<mpsc::Sender<AudioCommand>, String> {
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || -> Result<(), String> {
