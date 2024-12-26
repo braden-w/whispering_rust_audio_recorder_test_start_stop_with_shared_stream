@@ -313,9 +313,17 @@ pub fn spawn_audio_thread(
                     }
                 }
                 AudioCommand::CloseThread => {
-                    let _ = response_tx.send(AudioResponse::Success(
-                        "Audio thread exiting...".to_string(),
-                    ));
+                    // Clean up any active recording session
+                    if let Some(session) = current_recording_session.take() {
+                        drop(session.stream);
+                    }
+
+                    // Clean up any active writer
+                    if let Ok(mut guard) = writer.lock() {
+                        *guard = None;
+                    }
+
+                    response_tx.send(AudioResponse::Success("Thread closed".to_string()))?;
                     break;
                 }
             }

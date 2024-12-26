@@ -151,6 +151,40 @@ pub fn close_recording_session() -> Result<()> {
     })
 }
 
+pub fn close_thread() -> Result<()> {
+    let mut thread = AUDIO_THREAD
+        .lock()
+        .map_err(|e| RecorderError::LockError(e.to_string()))?;
+
+    if let Some((tx, rx)) = thread.take() {
+        debug!("Sending CloseThread command...");
+        tx.send(AudioCommand::CloseThread)
+            .map_err(|e| RecorderError::SendError(e.to_string()))?;
+
+        match rx.recv() {
+            Ok(AudioResponse::Success(_)) => {
+                info!("Audio thread closed successfully");
+                Ok(())
+            }
+            Ok(AudioResponse::Error(e)) => {
+                error!("Error closing audio thread: {}", e);
+                Err(RecorderError::AudioError(e))
+            }
+            Ok(_) => {
+                error!("Unexpected response while closing thread");
+                Err(RecorderError::AudioError("Unexpected response".to_string()))
+            }
+            Err(e) => {
+                error!("Failed to receive thread close response: {}", e);
+                Err(RecorderError::ReceiveError(e.to_string()))
+            }
+        }
+    } else {
+        debug!("No audio thread to close");
+        Ok(())
+    }
+}
+
 pub fn start_recording(recording_id: String) -> Result<()> {
     let filename = format!("{}.wav", recording_id);
 

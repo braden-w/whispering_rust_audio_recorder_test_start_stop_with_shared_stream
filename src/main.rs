@@ -1,8 +1,8 @@
 mod recorder;
 mod thread;
 use recorder::{
-    cancel_recording, close_recording_session, enumerate_recording_devices, init_recording_session,
-    start_recording, stop_recording,
+    cancel_recording, close_recording_session, close_thread, enumerate_recording_devices,
+    init_recording_session, start_recording, stop_recording,
 };
 use thread::UserRecordingSessionConfig;
 use tracing::{debug, error, info, warn, Level};
@@ -194,6 +194,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     warn!("Failed to clean up recording session: {}", e);
                     println!("Warning: Failed to clean up recording session: {}", e);
                 }
+
+                // Close the audio thread
+                if let Err(e) = close_thread() {
+                    warn!("Failed to close audio thread: {}", e);
+                    println!("Warning: Failed to close audio thread: {}", e);
+                }
+
                 info!("Exiting application");
                 println!("Exiting...");
                 break;
